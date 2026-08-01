@@ -1,10 +1,13 @@
 """Conexión y queries a Postgres para el panel Rentabilidad Rack."""
 import os
 import io
+import glob
 import pandas as pd
 import psycopg2
 import psycopg2.extras
 import streamlit as st
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def get_conn():
@@ -22,6 +25,72 @@ def get_conn():
         user=os.environ.get("PGUSER", "postgres"),
         password=os.environ.get("PGPASSWORD", ""),
     )
+
+
+@st.cache_resource
+def ensure_ready():
+    """Se corre una sola vez por proceso (cache_resource): si la base está
+    recién creada (sin tablas), la arma y la puebla con los datos reales
+    que vienen empaquetados en seed_*.csv.gz -- así no hace falta correr
+    nada a mano después de desplegar en Railway."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass('public.dim_tienda')")
+    existe = cur.fetchone()[0] is not None
+    if existe:
+        cur.close(); conn.close()
+        return "ya estaba lista"
+
+    with open(os.path.join(_HERE, "schema.sql"), encoding="utf-8") as f:
+        cur.execute(f.read())
+    conn.commit()
+
+    def _cargar(tabla, cols, archivo):
+        path = os.path.join(_HERE, archivo)
+        if not os.path.exists(path):
+            return 0
+        df = pd.read_csv(path)[cols]
+        if df.empty:
+            return 0
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, header=False)
+        buf.seek(0)
+        cur.copy_expert(
+            f"COPY {tabla} ({','.join(cols)}) FROM STDIN WITH (FORMAT csv, NULL '')", buf
+        )
+        return len(df)
+
+    n1 = _cargar("dim_tienda", ["cod_tienda", "nombre", "tipo"], "seed_tiendas.csv")
+    n2 = _cargar("fact_pasillo_rack_semana",
+                 ["cod_tienda", "anio", "mes", "semana", "pasillo", "rack", "venta", "margen"],
+                 "seed_pasillo_rack_semana.csv.gz")
+    n3 = _cargar("fact_producto_semana",
+                 ["cod_tienda", "anio", "mes", "semana", "cod_rapido", "descripcion", "venta", "cantidad"],
+                 "seed_producto_semana.csv.gz")
+    n4 = _cargar("dim_producto_tienda", ["cod_tienda", "cod_rapido", "descripcion", "maneja_stock"],
+                 "seed_producto_tienda.csv.gz")
+
+    plano_path = os.path.join(_HERE, "seed_plano_sanro.png")
+    coords_path = os.path.join(_HERE, "seed_coords_sanro.csv")
+    if os.path.exists(plano_path) and os.path.exists(coords_path):
+        from PIL import Image
+        img = Image.open(plano_path)
+        with open(plano_path, "rb") as f:
+            cur.execute(
+                "INSERT INTO dim_plano (cod_tienda, imagen, img_w, img_h) VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT (cod_tienda) DO NOTHING",
+                ("SANRO", psycopg2.Binary(f.read()), img.width, img.height),
+            )
+        coords = pd.read_csv(coords_path)
+        psycopg2.extras.execute_values(
+            cur, "INSERT INTO dim_pasillo_coord (cod_tienda,pasillo,x,y) VALUES %s ON CONFLICT DO NOTHING",
+            list(coords.itertuples(index=False, name=None)), page_size=1000,
+        )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return f"base inicializada: {n1} tiendas, {n2} filas pasillo/rack, {n3} filas producto, {n4} SKU"
 
 
 def _df(query, params=None):

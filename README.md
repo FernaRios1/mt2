@@ -40,19 +40,17 @@ seed_*.csv.gz / seed_plano_sanro.png   -- los datos reales que ya extraje de tu 
 6. Railway te da una URL pública (`algo.up.railway.app`) — esa es la que
    comparten con el equipo.
 
-## 2. Cargar los datos la primera vez
+## 2. La base se prepara sola
 
-Desde tu computador, apuntando a la base de Railway:
+No hace falta correr `cargar_datos_iniciales.py` a mano: la primera vez que
+alguien abre la app (o la página Administrar Planos), si la base está vacía,
+`db.ensure_ready()` crea las tablas y carga los datos reales empaquetados en
+`seed_*.csv.gz` — tarda ~25-30 segundos esa primera vez (usa `COPY`, no
+inserts fila por fila), y las siguientes veces no hace nada porque ya
+detecta que la base tiene datos.
 
-```bash
-pip install psycopg2-binary pandas Pillow
-export DATABASE_URL="<la misma que pusiste en Railway, pestaña Connect>"
-python cargar_datos_iniciales.py
-```
-
-Esto deja la base con todo lo que ya tenías en el `.pbix` (venta 2026 por
-semana, por pasillo/rack y por producto, más el plano de SANRO). El panel
-queda funcionando de inmediato con datos reales.
+`cargar_datos_iniciales.py` sigue ahí por si prefieres correrlo tú a mano
+antes de abrir la app, o para restaurar datos en otro ambiente.
 
 ## 3. Mantenerla al día
 

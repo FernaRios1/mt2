@@ -8,6 +8,11 @@ from auth import gate
 st.set_page_config(page_title="Rentabilidad Rack — Imperial", layout="wide", page_icon="🔧")
 gate()
 
+with st.spinner("Preparando la base de datos..."):
+    estado_db = db.ensure_ready()
+if estado_db != "ya estaba lista":
+    st.toast(f"Base de datos inicializada por primera vez: {estado_db}", icon="✅")
+
 # ---------- estilo mínimo ----------
 st.markdown("""
 <style>

@@ -8,6 +8,7 @@ from auth import gate
 
 st.set_page_config(page_title="Administrar Planos — Imperial", layout="wide", page_icon="🗺️")
 gate()
+db.ensure_ready()
 
 st.title("🗺️ Administrar planos de tienda")
 st.caption(
