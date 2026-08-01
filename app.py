@@ -278,7 +278,7 @@ with col_b:
             return "color:#5B6B79;"
 
         estilo = (racks_f.style
-                  .applymap(_color_reco, subset=["recomendación"])
+                  .map(_color_reco, subset=["recomendación"])
                   .format({"venta": fmt, "margen": fmt}))
         st.dataframe(estilo, width="stretch", hide_index=True, height=350)
     else:
