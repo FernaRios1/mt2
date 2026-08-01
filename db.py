@@ -36,20 +36,24 @@ def get_conn():
 
 @st.cache_resource
 def ensure_ready():
-    """Si la base está recién creada (sin tablas), la arma y la puebla con
-    los datos reales que vienen empaquetados en seed_*.csv.gz."""
+    """Crea las tablas que falten (CREATE TABLE IF NOT EXISTS, siempre seguro
+    de repetir) y puebla con los datos empaquetados en seed_*.csv.gz
+    SOLO las tablas que todavía estén vacías -- así funciona tanto en una
+    base nueva como en una que ya tenía algo de un despliegue anterior."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT to_regclass('public.dim_tienda')")
-    if cur.fetchone()[0] is not None:
-        cur.close(); conn.close()
-        return "ya estaba lista"
 
     with open(os.path.join(_HERE, "schema.sql"), encoding="utf-8") as f:
         cur.execute(f.read())
     conn.commit()
 
+    def _vacia(tabla):
+        cur.execute(f"SELECT NOT EXISTS (SELECT 1 FROM {tabla} LIMIT 1)")
+        return cur.fetchone()[0]
+
     def _cargar(tabla, cols, archivo):
+        if not _vacia(tabla):
+            return 0
         path = os.path.join(_HERE, archivo)
         if not os.path.exists(path):
             return 0
@@ -63,9 +67,23 @@ def ensure_ready():
         df.to_csv(buf, index=False, header=False)
         buf.seek(0)
         cur.copy_expert(f"COPY {tabla} ({','.join(cols)}) FROM STDIN WITH (FORMAT csv, NULL '')", buf)
+        conn.commit()
         return len(df)
 
-    n1 = _cargar("dim_tienda", ["cod_tienda", "nombre", "tipo"], "seed_tiendas.csv")
+    def _upsert_tiendas():
+        path = os.path.join(_HERE, "seed_tiendas.csv")
+        if not os.path.exists(path):
+            return 0
+        df = pd.read_csv(path)
+        rows = list(df[["cod_tienda", "nombre", "tipo"]].itertuples(index=False, name=None))
+        psycopg2.extras.execute_values(
+            cur, "INSERT INTO dim_tienda (cod_tienda,nombre,tipo) VALUES %s ON CONFLICT (cod_tienda) DO NOTHING",
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+
+    n1 = _upsert_tiendas()
     n2 = _cargar(
         "fact_venta_semana",
         ["cod_tienda", "anio", "mes", "semana", "pasillo", "rack", "cod_rapido", "descripcion",
@@ -80,7 +98,7 @@ def ensure_ready():
     plano_path = os.path.join(_HERE, "seed_plano_sanro.png")
     coords_path = os.path.join(_HERE, "seed_coords_sanro.csv")
     rack_coords_path = os.path.join(_HERE, "seed_rack_coords_sanro.csv")
-    if os.path.exists(plano_path):
+    if os.path.exists(plano_path) and _vacia("dim_plano"):
         from PIL import Image
         img = Image.open(plano_path)
         with open(plano_path, "rb") as f:
@@ -89,6 +107,7 @@ def ensure_ready():
                 "ON CONFLICT (cod_tienda) DO NOTHING",
                 ("SANRO", psycopg2.Binary(f.read()), img.width, img.height),
             )
+        conn.commit()
     if os.path.exists(coords_path):
         _cargar("dim_pasillo_coord", ["cod_tienda", "pasillo", "x", "y"], "seed_coords_sanro.csv")
     if os.path.exists(rack_coords_path):
