@@ -3,8 +3,8 @@ Agente de sincronización — SQL Server → Postgres (Railway)
 
 Se agenda con el Task Scheduler de Windows en un PC/servidor con acceso a tu
 SQL Server. Cada vez que corre, trae el año actual completo y lo sube a
-Postgres con INSERT ... ON CONFLICT (upsert), así que se puede correr todos
-los días sin duplicar nada.
+fact_venta_semana con INSERT ... ON CONFLICT (upsert), así que se puede
+correr todos los días sin duplicar nada.
 
 CONFIGURAR:
   pip install pyodbc psycopg2-binary pandas
@@ -16,28 +16,25 @@ AGENDAR (Task Scheduler):
   Desencadenador: diario, a la hora que prefieras (ej. 6 AM, antes de que
   abra la tienda). Acción: "python.exe" con argumento la ruta de este archivo.
 
-DE DÓNDE SALE PASILLO/RACK (confirmado contra tu modelo real, columna
-calculada `Etiqueta_base` — validé la regla contra 6.2M filas reales y da
-99.2% de coincidencia exacta con lo que ya tenías calculado en Power BI):
+DE DÓNDE SALE PASILLO/RACK (columna calculada Etiqueta_base del modelo,
+validada contra 6.2M filas reales -- 99.2% de coincidencia exacta):
 
     usa_exhibicion = Zona_pck IN ('Z03','Z04','Z06') OR ManejaStock = 'N'
-    Etiqueta_base  = si usa_exhibicion: Etiqueta_Exhibicion (o Etiqueta si esa viene vacía)
-                     si no:             Etiqueta (o Etiqueta_Exhibicion si esa viene vacía)
+    Etiqueta_base  = si usa_exhibicion: Etiqueta_Exhibicion (o Etiqueta si vacía)
+                     si no:             Etiqueta (o Etiqueta_Exhibicion si vacía)
     Pasillo = Etiqueta_base[:3]
     rack    = Etiqueta_base[:8]
 
 TABLA DE COORDENADAS (Pasillos / Puntos Planograma)
-  Esta NO sale de SQL Server -- el Power Query original la trae de un Excel:
-  "coordenadas planograma.xlsx" (hoja "Pasillos"), en el OneDrive de un
-  usuario "mriosv". Si tienes acceso a ese OneDrive, ahí está la fuente
-  maestra para las coordenadas de las demás tiendas -- puede ahorrarte
-  tener que remedirlas manualmente. Si no tienes acceso, seguimos con la
-  página Administrar Planos que ya armé (sube imagen + CSV a mano).
+  No sale de SQL Server -- el Power Query original la trae de un Excel:
+  "coordenadas planograma.xlsx" (hojas "Pasillos" y "Puntos Planograma"),
+  OneDrive de un usuario "mriosv". Si tienes acceso, ahí está la fuente
+  maestra de coordenadas (pasillo Y rack) para las demás tiendas. Si no,
+  usa la página Administrar Planos (sube imagen + CSV a mano).
 
-NO PROBADO CONTRA TU SQL SERVER REAL -- no tengo acceso a tu red. La regla de
-Pasillo/rack sí la validé con certeza (contra los datos reales del pbix), lo
-que no pude probar es esta query específica corriendo en vivo. Corre una
-prueba manual primero.
+NO PROBADO CONTRA TU SQL SERVER REAL -- no tengo acceso a tu red. La regla
+de Pasillo/rack sí la validé con certeza contra los datos reales del pbix.
+Corre una prueba manual primero.
 """
 import os
 import sys
@@ -57,9 +54,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgr
 STORE_CODES = ['SANRO', 'SEREN', 'MAIPU', 'TEMUC', 'RENAC', 'CONCE',
                'VALPA', 'TALCA', 'RANCA', 'MAPOC', 'HUECH', 'PMONT', 'VESPU']
 
-# Mismo patrón que mt2s.sql (bloque VENTAS): stock del día + ventas del año,
-# trayendo además Etiqueta/Etiqueta_Exhibicion/Zona_pck/ManejaStock para
-# poder calcular Pasillo/rack igual que la columna Etiqueta_base del modelo.
 QUERY = f"""
 DECLARE @IniAnio date = DATEFROMPARTS(YEAR(GETDATE()), 1, 1);
 
@@ -76,6 +70,8 @@ WITH StockRank AS (
             WHEN 'PTOMONTT'  THEN 'PMONT' ELSE s.cod_emp
         END AS cod_emp,
         s.Etiqueta_Exhibicion, s.Etiqueta, s.Zona_pck, s.ManejaStock,
+        s.SuperFamilia AS familia, s.Familia AS subfamilia, s.Subfamilia AS categoria,
+        s.Clasificacion,
         ROW_NUMBER() OVER (PARTITION BY s.Cod_Rapido, s.cod_emp ORDER BY s.Fecha_Proceso DESC) AS rn
     FROM SAV.dbo.SAV_CI_INFSTOCKBODEGA_DIARIO s
     WHERE CAST(s.Fecha_Proceso AS date) >= CAST(DATEADD(DAY, -1, GETDATE()) AS date)
@@ -100,11 +96,17 @@ SELECT
     RTRIM(LTRIM(v.cod_tienda)) AS cod_tienda, v.Cod_rapido AS cod_rapido, v.Descripcion AS descripcion,
     v.Fecha_Emision AS fecha_emision, v.Cantidad AS cantidad, v.total AS total,
     s.Etiqueta_Exhibicion AS etiqueta_exhibicion, s.Etiqueta AS etiqueta,
-    s.Zona_pck AS zona_pck, s.ManejaStock AS maneja_stock
+    s.Zona_pck AS zona_pck, s.ManejaStock AS maneja_stock,
+    s.familia, s.subfamilia, s.categoria, s.Clasificacion AS clasificacion
 FROM VentasDetalladas v
 LEFT JOIN UltimosRegistros s
     ON v.Cod_rapido = s.Cod_Rapido AND RTRIM(LTRIM(v.cod_tienda)) = s.cod_emp;
 """
+# NOTA sobre familia/subfamilia/categoria/responsable_linea: en el Power Query
+# original hay un renombre encadenado (Subfamilia->Categoria, Familia->SubFamilia,
+# SuperFamilia->Familia) -- ya lo dejé aplicado arriba. "Responsable de Linea" NO
+# vive en la tabla de stock (SAV_CI_INFSTOCKBODEGA_DIARIO); no encontré su fuente
+# exacta -- si te importa ese filtro en los datos nuevos, dime de dónde sale y lo agrego.
 
 
 def calcular_pasillo_rack(df):
@@ -137,45 +139,46 @@ def main():
     df["mes"] = df["fecha_emision"].dt.month
     df["semana"] = df["fecha_emision"].dt.isocalendar().week
     df = calcular_pasillo_rack(df)
-    df = df[df["pasillo"] != ""]  # filas sin match de stock -> sin pasillo, se descartan de esta tabla
+    df = df[df["pasillo"] != ""]
+    df["responsable_linea"] = None  # ver nota junto al QUERY
+
+    group_cols = ["cod_tienda", "anio", "mes", "semana", "pasillo", "rack", "cod_rapido", "descripcion",
+                  "familia", "subfamilia", "categoria", "clasificacion", "maneja_stock", "zona_pck",
+                  "responsable_linea"]
+    agg = df.groupby(group_cols, dropna=False, as_index=False).agg(
+        venta=("total", "sum"), cantidad=("cantidad", "sum"))
 
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
 
-    # --- fact_pasillo_rack_semana --- (margen queda en 0 hasta arreglar el JOIN de costo en origen)
-    agg_pr = (
-        df.groupby(["cod_tienda", "anio", "mes", "semana", "pasillo", "rack"], as_index=False)
-        .agg(venta=("total", "sum"))
-    )
-    rows_pr = [(str(r.cod_tienda), int(r.anio), int(r.mes), int(r.semana), str(r.pasillo), str(r.rack),
-                float(r.venta), 0.0) for r in agg_pr.itertuples(index=False)]
+    def _val(v):
+        return None if pd.isna(v) else v
+
+    rows = []
+    for r in agg[group_cols + ["venta", "cantidad"]].itertuples(index=False, name=None):
+        cod_tienda, anio_, mes_, semana_, pasillo, rack, cod_rapido, descripcion = r[0:8]
+        familia, subfamilia, categoria, clasificacion, maneja_stock, zona_pck, responsable_linea = r[8:15]
+        venta, cantidad = r[15], r[16]
+        rows.append((
+            str(cod_tienda), int(anio_), int(mes_), int(semana_), str(pasillo), str(rack), str(cod_rapido),
+            _val(descripcion), _val(familia), _val(subfamilia), _val(categoria), _val(clasificacion),
+            _val(maneja_stock), _val(zona_pck), _val(responsable_linea),
+            float(venta), 0.0, float(cantidad),
+        ))
+
     psycopg2.extras.execute_values(
         cur,
-        "INSERT INTO fact_pasillo_rack_semana (cod_tienda,anio,mes,semana,pasillo,rack,venta,margen) "
-        "VALUES %s ON CONFLICT (cod_tienda,anio,mes,semana,pasillo,rack) DO UPDATE "
-        "SET venta = EXCLUDED.venta",
-        rows_pr, page_size=5000,
+        "INSERT INTO fact_venta_semana (cod_tienda,anio,mes,semana,pasillo,rack,cod_rapido,descripcion,"
+        "familia,subfamilia,categoria,clasificacion,maneja_stock,zona_pck,responsable_linea,venta,margen,cantidad) "
+        "VALUES %s "
+        "ON CONFLICT (cod_tienda,anio,mes,semana,pasillo,rack,cod_rapido) DO UPDATE SET "
+        "venta = EXCLUDED.venta, cantidad = EXCLUDED.cantidad, descripcion = EXCLUDED.descripcion, "
+        "familia = EXCLUDED.familia, subfamilia = EXCLUDED.subfamilia, categoria = EXCLUDED.categoria, "
+        "clasificacion = EXCLUDED.clasificacion, maneja_stock = EXCLUDED.maneja_stock, zona_pck = EXCLUDED.zona_pck",
+        rows, page_size=5000,
     )
-    print(f"fact_pasillo_rack_semana: {len(rows_pr):,} filas")
+    print(f"fact_venta_semana: {len(rows):,} filas")
 
-    # --- fact_producto_semana ---
-    agg_prod = (
-        df.groupby(["cod_tienda", "anio", "mes", "semana", "cod_rapido", "descripcion"], as_index=False)
-        .agg(venta=("total", "sum"), cantidad=("cantidad", "sum"))
-    )
-    rows_prod = [(str(r.cod_tienda), int(r.anio), int(r.mes), int(r.semana), str(r.cod_rapido),
-                  str(r.descripcion) if pd.notna(r.descripcion) else None, float(r.venta), float(r.cantidad))
-                 for r in agg_prod.itertuples(index=False)]
-    psycopg2.extras.execute_values(
-        cur,
-        "INSERT INTO fact_producto_semana (cod_tienda,anio,mes,semana,cod_rapido,descripcion,venta,cantidad) "
-        "VALUES %s ON CONFLICT (cod_tienda,anio,mes,semana,cod_rapido) DO UPDATE "
-        "SET venta = EXCLUDED.venta, cantidad = EXCLUDED.cantidad, descripcion = EXCLUDED.descripcion",
-        rows_prod, page_size=5000,
-    )
-    print(f"fact_producto_semana: {len(rows_prod):,} filas")
-
-    # --- dim_producto_tienda (universo vigente, para "sin venta") ---
     universo = df.groupby(["cod_tienda", "cod_rapido"], as_index=False).agg(
         descripcion=("descripcion", "first"), maneja_stock=("maneja_stock", "first"))
     rows_u = [(str(r.cod_tienda), str(r.cod_rapido), str(r.descripcion) if pd.notna(r.descripcion) else None,
@@ -192,7 +195,7 @@ def main():
 
     cur.execute(
         "INSERT INTO sync_log (filas_pasillo_rack, filas_producto, ok, mensaje) VALUES (%s,%s,%s,%s)",
-        (len(rows_pr), len(rows_prod), True, "OK"),
+        (len(rows), len(rows), True, "OK"),
     )
     conn.commit()
     cur.close()

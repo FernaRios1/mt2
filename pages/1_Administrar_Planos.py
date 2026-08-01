@@ -45,31 +45,38 @@ with col1:
             st.cache_data.clear()
 
 with col2:
-    st.subheader("2. Coordenadas de cada pasillo")
+    st.subheader("2. Coordenadas")
+    nivel = st.radio("Nivel de detalle", ["Pasillo", "Rack"], horizontal=True)
+    nivel_key = "pasillo" if nivel == "Pasillo" else "rack"
     st.markdown(
-        "Sube un CSV con columnas **pasillo, x, y** — x e y son la posición en píxeles "
+        f"Sube un CSV con columnas **{nivel_key}, x, y** — x e y son la posición en píxeles "
         "sobre la imagen que subiste al lado (esquina superior izquierda = 0,0). "
         "Si no las tienes medidas, puedes estimarlas abriendo la imagen en cualquier editor "
-        "y viendo la posición del cursor."
+        "y viendo la posición del cursor. Pasillo da un mapa de calor más general; "
+        "Rack da el detalle fino (requiere más puntos)."
     )
-    csv_file = st.file_uploader("Coordenadas (CSV)", type=["csv"])
+    csv_file = st.file_uploader("Coordenadas (CSV)", type=["csv"], key=f"coords_{nivel_key}")
     if csv_file is not None:
         df_coords = pd.read_csv(csv_file)
-        faltan = {"pasillo", "x", "y"} - set(df_coords.columns.str.lower())
         df_coords.columns = [c.lower() for c in df_coords.columns]
+        faltan = {nivel_key, "x", "y"} - set(df_coords.columns)
         if faltan:
             st.error(f"Faltan columnas: {', '.join(faltan)}")
         else:
             st.dataframe(df_coords, width='stretch', height=200)
             if st.button("Guardar coordenadas", type="primary"):
-                db.guardar_coords(cod_tienda, df_coords)
-                st.success(f"{len(df_coords)} pasillos guardados para {cod_tienda}.")
+                db.guardar_coords(cod_tienda, df_coords, nivel=nivel_key)
+                st.success(f"{len(df_coords)} filas de {nivel_key} guardadas para {cod_tienda}.")
                 st.cache_data.clear()
 
 st.divider()
 st.subheader("Coordenadas actuales")
-actuales = db.get_coords(cod_tienda)
-if actuales.empty:
-    st.caption("Sin coordenadas cargadas todavía para esta tienda.")
-else:
-    st.dataframe(actuales, width='stretch', hide_index=True)
+col_p, col_r = st.columns(2)
+with col_p:
+    st.caption("Por pasillo")
+    actuales_p = db.get_coords(cod_tienda, nivel="pasillo")
+    st.dataframe(actuales_p, width='stretch', hide_index=True) if not actuales_p.empty else st.caption("Sin datos.")
+with col_r:
+    st.caption("Por rack")
+    actuales_r = db.get_coords(cod_tienda, nivel="rack")
+    st.dataframe(actuales_r, width='stretch', hide_index=True) if not actuales_r.empty else st.caption("Sin datos.")

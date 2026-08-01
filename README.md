@@ -82,6 +82,36 @@ Lo que armé:
   alguien tenga la contraseña. Si no la tienes, deja esa variable vacía por
   ahora y usa solo la contraseña.
 
+## Novedades de esta versión
+
+- **Filtros de producto** en el sidebar: Familia, Categoría, Clasificación SKU,
+  Zona de picking, Jefe de línea, Maneja stock — igual que en el BI original,
+  aplican sobre el mapa de calor, las tablas de pasillo/rack y las de producto
+  a la vez (todo sale de una sola tabla `fact_venta_semana`).
+- **Mapa de calor con selector Pasillo / Rack** — mismo plano, cambias el
+  nivel y los puntos se recalculan solos. Rack necesita coordenadas más finas
+  (`dim_rack_coord`, ya cargadas para SANRO desde "Puntos Planograma";
+  para otras tiendas, súbelas en Administrar Planos igual que las de pasillo).
+- **Tema visual** (`.streamlit/config.toml` + CSS en `app.py`) — sidebar oscuro,
+  acento ámbar, tipografía monoespaciada en los números, para que se vea más
+  parecido al HTML que armé antes que al Streamlit por defecto.
+
+## Sobre compartir la versión HTML en vez de esto
+
+Es posible, pero con un trade-off: el HTML standalone es una **foto fija**
+(no se conecta a Postgres, no tiene filtros en vivo, no hay period picker
+dinámico salvo lo que ya tenía embebido) — para compartirlo solo hay que
+mandar el archivo, cualquiera lo abre con doble clic, no necesita nada
+instalado. Esta app de Streamlit sí es "viva" (conectada a Postgres, con
+filtros, con carga de nuevos planos) pero necesita estar desplegada en algún
+lado (Railway) para que el equipo la vea por URL.
+
+Si quieres lo mejor de los dos mundos, el camino natural es: dejar esta app
+de Streamlit desplegada como la fuente de verdad, y generar snapshots HTML
+descargables desde acá (un botón "Exportar HTML de esta vista") para cuando
+alguien quiera mandar un reporte fijo por correo sin que el destinatario
+necesite entrar al sistema. Puedo armar ese botón si te sirve.
+
 ## Sobre el bug de margen
 
 El margen sale en $0 en todos los datos cargados porque el JOIN de costo en
