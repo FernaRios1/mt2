@@ -112,6 +112,36 @@ descargables desde acá (un botón "Exportar HTML de esta vista") para cuando
 alguien quiera mandar un reporte fijo por correo sin que el destinatario
 necesite entrar al sistema. Puedo armar ese botón si te sirve.
 
+## Cambios de esta ronda (feedback sobre el dashboard)
+
+Solo se tocaron `app.py` y `db.py` — no hubo cambios de esquema ni de datos.
+
+- **Escala de color del mapa** cambiada de `YlOrRd` a `Turbo` (mucho más
+  contraste entre valores bajos y altos).
+- **Clic en el mapa filtra todas las tablas** (pasillo, rack, top/menor
+  venta) por ese pasillo o rack — aparece un aviso arriba con botón
+  "Quitar filtro del mapa" para volver a la vista completa.
+- **Recomendación de espacio** en el detalle por rack: compara la venta de
+  cada rack contra el promedio de los racks visibles en esa vista.
+  ≥1.5× el promedio → "Aumentar espacio"; ≤0.5× → "Reducir espacio";
+  el resto → "Mantener". Es una regla simple de partida, ajustable si
+  quieres otro umbral.
+- **Columna "Maneja stock" (Sí/No)** agregada a Top productos y Menor
+  venta. **Ojo:** el modelo actual solo tiene ese indicador booleano, no
+  la cantidad real en bodega — esa columna no existe todavía en
+  `fact_venta_semana` ni en la consulta SQL del agente
+  (`agente_rentabilidad_rack.py`). Si me dices el nombre del campo de
+  stock en `SAV_CI_INFSTOCKBODEGA_DIARIO`, lo agrego al esquema, a la
+  consulta del agente y a la tabla.
+- **Resumen jerárquico** nuevo: Familia → Jefe de línea → Subconjunto
+  (categoría), con expanders para ir bajando de nivel.
+- **Sección "Sin asociar al plano"**: lista pasillos y racks con venta en
+  el período que todavía no tienen coordenada cargada en
+  `dim_pasillo_coord` / `dim_rack_coord`.
+- **Contraste en los filtros del sidebar** (Tienda, Mes, multiselects)
+  corregido — el problema era que la lista desplegable se monta fuera del
+  contenedor del sidebar y no heredaba el tema oscuro.
+
 ## Sobre el bug de margen
 
 El margen sale en $0 en todos los datos cargados porque el JOIN de costo en

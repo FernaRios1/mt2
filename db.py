@@ -150,12 +150,13 @@ def get_opciones_filtro(cod_tienda):
     return out
 
 
-def _where(cod_tienda, anio, mes, semana, filtros, alias=None):
+def _where(cod_tienda, anio, mes, semana, filtros, alias=None, pasillo_sel=None, rack_sel=None):
     """Arma el WHERE de período + filtros de clasificación. filtros: dict
     {familia: [...], categoria: [...], clasificacion: [...], zona_pck: [...],
      responsable_linea: [...], maneja_stock: [...]} -- listas vacías u
     omitidas no filtran esa dimensión. alias: prefijo de tabla opcional
-    (ej. 'f') para usar en subconsultas con JOIN/EXISTS."""
+    (ej. 'f') para usar en subconsultas con JOIN/EXISTS. pasillo_sel/rack_sel:
+    filtro puntual por click en el mapa de calor (un solo pasillo o rack)."""
     p = f"{alias}." if alias else ""
     where = [f"{p}cod_tienda = %(t)s", f"{p}anio = %(a)s"]
     params = {"t": cod_tienda, "a": anio}
@@ -170,20 +171,26 @@ def _where(cod_tienda, anio, mes, semana, filtros, alias=None):
         if vals:
             where.append(f"{p}{col} = ANY(%({key})s)")
             params[key] = list(vals)
+    if pasillo_sel:
+        where.append(f"{p}pasillo = %(psel)s")
+        params["psel"] = pasillo_sel
+    if rack_sel:
+        where.append(f"{p}rack = %(rsel)s")
+        params["rsel"] = rack_sel
     return " AND ".join(where), params
 
 
 @st.cache_data(ttl=300)
-def get_pasillo_resumen(cod_tienda, anio, mes=None, semana=None, filtros=None):
-    where, params = _where(cod_tienda, anio, mes, semana, filtros)
+def get_pasillo_resumen(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo_sel=None, rack_sel=None):
+    where, params = _where(cod_tienda, anio, mes, semana, filtros, pasillo_sel=pasillo_sel, rack_sel=rack_sel)
     q = (f"SELECT pasillo, SUM(venta) AS venta, SUM(margen) AS margen, COUNT(DISTINCT rack) AS racks "
          f"FROM fact_venta_semana WHERE {where} GROUP BY pasillo ORDER BY venta DESC")
     return _df(q, params)
 
 
 @st.cache_data(ttl=300)
-def get_rack_detalle(cod_tienda, anio, mes=None, semana=None, filtros=None):
-    where, params = _where(cod_tienda, anio, mes, semana, filtros)
+def get_rack_detalle(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo_sel=None, rack_sel=None):
+    where, params = _where(cod_tienda, anio, mes, semana, filtros, pasillo_sel=pasillo_sel, rack_sel=rack_sel)
     q = (f"SELECT pasillo, rack, SUM(venta) AS venta, SUM(margen) AS margen "
          f"FROM fact_venta_semana WHERE {where} GROUP BY pasillo, rack ORDER BY venta DESC")
     return _df(q, params)
@@ -199,12 +206,15 @@ def get_venta_por_nivel(cod_tienda, anio, mes=None, semana=None, filtros=None, n
 
 
 @st.cache_data(ttl=300)
-def get_top_productos(cod_tienda, anio, mes=None, semana=None, filtros=None, n=50, ascendente=False):
-    where, params = _where(cod_tienda, anio, mes, semana, filtros)
+def get_top_productos(cod_tienda, anio, mes=None, semana=None, filtros=None, n=50, ascendente=False,
+                       pasillo_sel=None, rack_sel=None):
+    where, params = _where(cod_tienda, anio, mes, semana, filtros, pasillo_sel=pasillo_sel, rack_sel=rack_sel)
     orden = "ASC" if ascendente else "DESC"
     having = "HAVING SUM(venta) > 0" if ascendente else ""
     params["n"] = n
-    q = (f"SELECT cod_rapido, descripcion, SUM(venta) AS venta, SUM(cantidad) AS cantidad "
+    # MAX(maneja_stock) alcanza: es un atributo del SKU, no varía por fila agrupada.
+    q = (f"SELECT cod_rapido, descripcion, MAX(maneja_stock) AS maneja_stock, "
+         f"SUM(venta) AS venta, SUM(cantidad) AS cantidad "
          f"FROM fact_venta_semana WHERE {where} "
          f"GROUP BY cod_rapido, descripcion {having} ORDER BY venta {orden} LIMIT %(n)s")
     return _df(q, params)
@@ -220,6 +230,35 @@ def get_sin_venta(cod_tienda, anio, mes=None, semana=None, filtros=None, n=300):
          f"AND NOT EXISTS (SELECT 1 FROM fact_venta_semana f WHERE {where_f} "
          f"AND f.cod_rapido = d.cod_rapido AND f.venta > 0) "
          f"ORDER BY d.descripcion LIMIT %(n)s")
+    return _df(q, params)
+
+
+@st.cache_data(ttl=300)
+def get_resumen_jerarquico(cod_tienda, anio, mes=None, semana=None, filtros=None):
+    """Venta/margen agrupados de lo más general a lo más fino:
+    Familia -> Jefe de línea -> Subconjunto (categoría)."""
+    where, params = _where(cod_tienda, anio, mes, semana, filtros)
+    q = (f"SELECT COALESCE(NULLIF(familia,''),'(sin familia)') AS familia, "
+         f"COALESCE(NULLIF(responsable_linea,''),'(sin jefe de línea)') AS jefe_linea, "
+         f"COALESCE(NULLIF(categoria,''),'(sin subconjunto)') AS subconjunto, "
+         f"SUM(venta) AS venta, SUM(margen) AS margen "
+         f"FROM fact_venta_semana WHERE {where} "
+         f"GROUP BY familia, responsable_linea, categoria ORDER BY venta DESC")
+    return _df(q, params)
+
+
+@st.cache_data(ttl=300)
+def get_sin_coord(cod_tienda, anio, mes=None, semana=None, filtros=None, nivel="pasillo"):
+    """Pasillos o racks con venta en el período/filtros elegidos que todavía
+    no tienen coordenada cargada -- por eso no aparecen como punto en el
+    mapa de calor. Sirve para detectar huecos en el mapeo del plano."""
+    tabla = "dim_pasillo_coord" if nivel == "pasillo" else "dim_rack_coord"
+    col = "pasillo" if nivel == "pasillo" else "rack"
+    where_f, params = _where(cod_tienda, anio, mes, semana, filtros, alias="f")
+    q = (f"SELECT f.{col} AS clave, SUM(f.venta) AS venta FROM fact_venta_semana f "
+         f"WHERE {where_f} AND NOT EXISTS "
+         f"(SELECT 1 FROM {tabla} c WHERE c.cod_tienda = f.cod_tienda AND c.{col} = f.{col}) "
+         f"GROUP BY f.{col} ORDER BY venta DESC")
     return _df(q, params)
 
 
