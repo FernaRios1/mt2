@@ -1,0 +1,66 @@
+:root{
+  --bg:#EEF1F0; --panel:#FFFFFF; --ink:#1B2430; --ink-soft:#5B6B79;
+  --line:#DCE1E0; --navy:#16212B; --amber:#F0A202; --green:#1E8A5B; --red:#C4432B;
+}
+body{ background:var(--bg); color:var(--ink); font-family:'Barlow',-apple-system,sans-serif; margin:0; }
+h1,h2,h3{ font-family:'Archivo Expanded',sans-serif; letter-spacing:-.01em; }
+
+.login-wrap{ display:flex; align-items:center; justify-content:center; height:100vh; background:var(--navy); }
+.login-box{ background:white; padding:36px 40px; border-radius:14px; width:320px; text-align:center; }
+.login-input{ width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px; box-sizing:border-box; }
+.login-btn{ width:100%; padding:10px; border:none; border-radius:8px; background:var(--amber); color:var(--navy); font-weight:700; cursor:pointer; }
+
+.shell{ display:flex; min-height:100vh; }
+.sidebar{ width:260px; flex:0 0 260px; background:var(--navy); color:#DDE3E8; padding:24px 18px; position:sticky; top:0; height:100vh; overflow-y:auto; }
+.brand{ padding-bottom:14px; border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:14px; }
+.brand-mark{ font-family:'Archivo Expanded',sans-serif; font-weight:800; font-size:17px; color:#fff; }
+.brand-sub{ font-size:11px; color:#8FA0AC; text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+.side-label{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#8FA0AC; margin:10px 0 4px; }
+.side-label-strong{ color:#fff; font-weight:700; }
+.side-hr{ border-color:rgba(255,255,255,.12); margin:14px 0; }
+.side-foot{ font-size:11px; color:#6E7E89; }
+.side-selection{ font-size:12px; }
+.side-selection-active{ background:var(--amber); color:var(--navy); padding:6px 10px; border-radius:8px; font-weight:700; font-size:12px; }
+.side-radio{ display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+.side-radio-item{ font-size:13px; color:#DDE3E8; padding:2px 0; }
+.side-dd{ margin-bottom:8px; font-size:13px; }
+.side-dd .Select-control, .side-dd .dash-dropdown{ background:#223040 !important; }
+
+/* Dropdown internals (react-select via Dash) need overrides for the dark sidebar */
+.sidebar .dash-dropdown div[class*="-control"]{ background:#223040; border-color:#2E3D4D; min-height:34px; }
+.sidebar .dash-dropdown div[class*="-singleValue"], .sidebar .dash-dropdown div[class*="-placeholder"]{ color:#DDE3E8; }
+.sidebar .dash-dropdown div[class*="-menu"]{ background:#223040; color:#DDE3E8; z-index:20; }
+.sidebar .dash-dropdown div[class*="-option"]{ background:#223040; color:#DDE3E8; }
+.sidebar .dash-dropdown div[class*="-option"]:hover{ background:#2E3D4D; }
+.sidebar .dash-dropdown div[class*="-multiValue"]{ background:#33465A; }
+.sidebar .dash-dropdown div[class*="-multiValue"] div{ color:#fff; }
+.sidebar .dash-dropdown svg{ fill:#8FA0AC; }
+.sidebar input{ color:#fff; }
+
+.main{ flex:1; min-width:0; padding:30px 34px 60px; }
+.header-periodo{ color:var(--ink-soft); font-size:13px; margin-left:10px; }
+h1{ font-size:27px; margin:0 0 6px; }
+
+.kpi-card{ border:1px solid var(--line); border-radius:10px; }
+.kpi-value{ font-family:'JetBrains Mono',monospace; font-weight:600; font-size:22px; color:var(--navy); }
+.kpi-label{ font-size:11.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em; margin-top:3px; }
+
+.section-panel{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin:18px 0; }
+.section-title{ font-size:14px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; color:var(--navy); margin:0 0 4px; }
+.section-subtitle{ font-size:12.5px; color:var(--ink-soft); margin-bottom:12px; }
+.subblock-title{ font-weight:700; font-size:13px; margin-bottom:8px; }
+
+.badge-bad{ background:#F6E4E1; color:var(--red); padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; margin-right:6px; }
+.badge-good{ background:#E4F1E9; color:var(--green); padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; margin-right:8px; }
+.badge-neutral{ background:#EDEFED; color:var(--ink-soft); padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; margin-right:6px; }
+.recom-badges span{ margin-right:8px; margin-bottom:6px; display:inline-block; }
+.margen-alert{ font-size:13px; }
+
+.nivel-toggle{ margin-bottom:6px; }
+.nivel-toggle label{ margin-right:16px; font-weight:600; }
+
+.dash-table-container .dash-spreadsheet-container{ font-size:13px; }
+
+.side-navlink{ display:block; color:var(--amber); font-weight:700; font-size:13px; text-decoration:none; padding:6px 0; }
+.side-navlink:hover{ color:#fff; }
+.upload-box{ border:2px dashed var(--line); border-radius:10px; padding:24px; text-align:center; color:var(--ink-soft); cursor:pointer; }
