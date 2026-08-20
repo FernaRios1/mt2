@@ -84,6 +84,8 @@ BASE_TABLE = dict(
     page_size=10,
     sort_action="native",
     export_format="csv",
+    tooltip_delay={"show": 350, "hide": 100},
+    tooltip_duration=None,
     locale_format={"group": ".", "decimal": ","},
 )
 
@@ -102,17 +104,31 @@ ACTION_STYLE = [
 ]
 
 
-def section(title, children, subtitle=None, class_name="section-panel"):
+def info_tip(text):
+    """Icono de ayuda: al posar el mouse (o foco) muestra cómo se calcula/interpreta."""
+    return html.Span(
+        "i", className="info-tip", title=text,
+        **{"data-tip": text, "aria-label": text},
+    )
+
+
+def label_with_tip(label, tip=None, class_name="label-with-tip"):
+    if not tip:
+        return label
+    return html.Span([html.Span(label), info_tip(tip)], className=class_name)
+
+
+def section(title, children, subtitle=None, class_name="section-panel", tooltip=None):
     head = [html.Div([
-        html.H2(title, className="section-title"),
+        html.H2(label_with_tip(title, tooltip), className="section-title"),
         html.Div(subtitle, className="section-subtitle") if subtitle else None,
     ], className="section-head")]
     return html.Section([*head, *children], className=class_name)
 
 
-def metric_card(label, value, helper=None, tone="default"):
+def metric_card(label, value, helper=None, tone="default", tooltip=None):
     return html.Div([
-        html.Div(label, className="metric-label"),
+        html.Div(label_with_tip(label, tooltip), className="metric-label"),
         html.Div(value, className="metric-value"),
         html.Div(helper, className=f"metric-helper metric-{tone}") if helper else None,
     ], className="metric-card")
@@ -137,13 +153,13 @@ sidebar = html.Aside([
     html.Div([
         html.Div("IMPERIAL", className="brand-eyebrow"),
         html.Div("Desempeño de Racks", className="brand-mark"),
-        html.Div("Decisiones de espacio y surtido", className="brand-sub"),
+        html.Div("Venta, tendencia, surtido y oportunidades", className="brand-sub"),
     ], className="brand"),
 
-    html.Div("Tienda", className="side-label"),
+    html.Div(label_with_tip("Tienda", "Todo el dashboard se calcula para la tienda seleccionada. Cross-sell también se limita a esta tienda."), className="side-label"),
     dcc.Dropdown(id="f-tienda", clearable=False, className="side-dd"),
 
-    html.Div("Período", className="side-label side-gap"),
+    html.Div(label_with_tip("Período", "Mes = ventas del mes elegido. Semana = semana ISO elegida. Año = acumulado del año disponible. La variación prioriza el mismo período del año anterior y, si no existe ese detalle, usa el período anterior disponible del mismo año."), className="side-label side-gap"),
     dcc.RadioItems(
         id="f-modo-periodo",
         options=[{"label": "Mes", "value": "Mes"}, {"label": "Semana", "value": "Semana"},
@@ -155,7 +171,7 @@ sidebar = html.Aside([
     dcc.Dropdown(id="f-semana", clearable=False, className="side-dd", style={"display": "none"}),
 
     html.Details([
-        html.Summary("Filtros avanzados", className="filters-summary"),
+        html.Summary([html.Span("Filtros avanzados"), info_tip("Filtran venta, mapa, recomendaciones, diagnóstico, productos y categorías. El stock sin venta siempre se evalúa YTD y cross-sell usa todas las boletas del año de la tienda.")], className="filters-summary"),
         html.Div([
             dcc.Dropdown(id="f-familia", multi=True, placeholder="Familia", className="side-dd"),
             dcc.Dropdown(id="f-categoria", multi=True, placeholder="Categoría", className="side-dd"),
@@ -183,6 +199,15 @@ action_table = dash_table.DataTable(
     **BASE_TABLE,
     style_data_conditional=ACTION_STYLE,
     cell_selectable=True,
+    tooltip_header={
+        "prioridad": "Orden de atención definido por el motor de recomendaciones. No usa margen.",
+        "accion": "Acción sugerida a partir de nivel de venta, variación, surtido y venta por SKU.",
+        "venta": "Suma de venta del rack en el período y filtros activos.",
+        "variacion_pct": "(Venta actual - venta comparable) / venta comparable. La comparación usada se muestra arriba del cuadro.",
+        "skus": "Cantidad de SKU distintos que tuvieron venta en ese rack durante el período seleccionado.",
+        "venta_por_sku": "Venta del rack dividida por la cantidad de SKU distintos con venta. No es margen ni rentabilidad.",
+        "motivo": "Señal concreta que hizo que el rack recibiera esa recomendación.",
+    },
 )
 
 main = html.Main([
@@ -192,9 +217,10 @@ main = html.Main([
 
     section("Qué hacer primero", [
         html.Div(id="action-summary"),
-        html.Div("Haz clic en una fila para analizar ese rack.", className="micro-help"),
+        html.Div("Haz clic en una fila para analizar ese rack. Pasa el mouse sobre los íconos i o encabezados para ver cómo se calcula cada indicador.", className="micro-help"),
         action_table,
-    ], subtitle="Respeta el período y los filtros activos. Cada acción muestra la señal que la dispara."),
+    ], subtitle="Recomendaciones explicables usando venta, variación y surtido. No usa margen.",
+       tooltip="Motor actual sin margen: Proteger venta = rack top 30% en venta con caída de 10% o más; Revisar rack = rack bottom 30% con caída de 10% o más; Potenciar = top 30% con crecimiento de 10% o más (o alta venta por SKU si no hay comparación); Optimizar surtido = venta bajo la mediana y cantidad de SKU con venta en el 30% superior."),
 
     dbc.Row([
         dbc.Col(section("Mapa de la tienda", [
@@ -204,21 +230,24 @@ main = html.Main([
                 html.Div(id="coord-status"),
             ], className="map-toolbar"),
             dcc.Graph(id="mapa-calor", config={"displayModeBar": False, "scrollZoom": False}),
-        ], subtitle="El tamaño y color muestran venta del período. Haz clic para abrir el diagnóstico de una sección."), md=8),
+        ], subtitle="Cada punto representa un rack o pasillo; tamaño y color representan venta del período.",
+           tooltip="El mapa usa la venta del período seleccionado y los filtros avanzados. No usa margen. Al hacer clic, todo el detalle se restringe al rack/pasillo elegido."), md=8),
         dbc.Col([
             section("Diagnóstico", [
                 html.Div(id="selection-panel"),
                 html.Button("Quitar selección", id="btn-clear-selection", n_clicks=0, className="ghost-button"),
-            ], subtitle="KPIs, categorías y recomendación respetan el período y los filtros activos."),
+            ], subtitle="Explica la sección seleccionada con venta, comparación, surtido vigente y categorías.",
+               tooltip="Venta, unidades y SKU con venta provienen del período seleccionado. SKU asociados hoy y SKU con stock hoy provienen del surtido/stock vigente. La recomendación no utiliza margen."),
             section("Tendencia semanal", [
                 dcc.Graph(id="tendencia-semanal", config={"displayModeBar": False}),
-            ], class_name="section-panel compact-panel"),
+            ], class_name="section-panel compact-panel",
+               tooltip="Suma la venta por semana del año actual para la misma tienda, filtros y rack/pasillo seleccionado. Sirve para ver tendencia; no es una comparación de margen."),
         ], md=4),
     ], className="g-3"),
 
     section("Explorar el porqué", [
         html.Div([
-            html.Div("El detalle de estas pestañas respeta tienda, período, filtros y rack/pasillo seleccionado.", className="micro-help"),
+            html.Div("Venta/productos/categorías respetan tienda, período, filtros y rack/pasillo. Stock sin venta es YTD. Cross-sell usa el año completo de la tienda.", className="micro-help"),
             html.Div([
                 html.Button("Descargar detalle filtrado", id="btn-download-detalle", n_clicks=0, className="download-button"),
                 html.Button("Descargar stock sin venta", id="btn-download-sinventa", n_clicks=0, className="download-button"),
@@ -229,23 +258,41 @@ main = html.Main([
                 dbc.Row([
                     dbc.Col([
                         html.Div("Racks", className="subblock-title"),
-                        dash_table.DataTable(id="tabla-racks", **BASE_TABLE),
+                        dash_table.DataTable(id="tabla-racks", **BASE_TABLE, tooltip_header={
+                            "skus": "SKU distintos con venta en el período, no todos los SKU asociados al rack.",
+                            "venta": "Suma de venta del rack con período y filtros activos.",
+                            "venta_por_sku": "Venta del rack / SKU distintos con venta. No es margen.",
+                            "unidades": "Suma de cantidad vendida del rack.",
+                        }),
                     ], md=7),
                     dbc.Col([
                         html.Div("Pasillos", className="subblock-title"),
-                        dash_table.DataTable(id="tabla-pasillos", **BASE_TABLE),
+                        dash_table.DataTable(id="tabla-pasillos", **BASE_TABLE, tooltip_header={
+                            "racks": "Racks distintos con venta dentro del pasillo y universo filtrado.",
+                            "skus": "SKU distintos con venta en el período.",
+                            "venta": "Suma de venta del pasillo.",
+                            "venta_por_rack": "Venta del pasillo / racks con venta. No es margen.",
+                        }),
                     ], md=5),
                 ], className="g-3 tab-content"),
             ]),
             dcc.Tab(label="Productos", value="productos", className="detail-tab", selected_className="detail-tab-selected", children=[
                 html.Div([
-                    html.Div("Productos con mayor venta", className="subblock-title"),
+                    html.Div(label_with_tip("Productos con mayor venta", "Ordena de mayor a menor la suma de venta del SKU en el período, tienda, filtros y sección seleccionada. No usa margen."), className="subblock-title"),
                     html.Div("Ordenados por venta del período seleccionado. No utiliza margen.", className="micro-help"),
-                    dash_table.DataTable(id="tabla-top", **BASE_TABLE),
+                    dash_table.DataTable(id="tabla-top", **BASE_TABLE, tooltip_header={
+                        "venta": "Suma de venta del SKU en el período y filtros activos.",
+                        "cantidad": "Cantidad de unidades vendidas en el período.",
+                        "stock": "Stock disponible del snapshot vigente; no es stock histórico del período.",
+                    }),
                     html.Hr(className="soft-hr"),
-                    html.Div("Productos con menor venta (pero sí vendieron)", className="subblock-title"),
+                    html.Div(label_with_tip("Productos con menor venta (pero sí vendieron)", "Incluye únicamente SKU con venta positiva y los ordena desde la menor venta. No significa bajo margen, baja rentabilidad ni pérdida."), className="subblock-title"),
                     html.Div("Muestra los SKU con venta positiva más baja del período. No significa bajo margen ni pérdida.", className="micro-help"),
-                    dash_table.DataTable(id="tabla-baja", **BASE_TABLE),
+                    dash_table.DataTable(id="tabla-baja", **BASE_TABLE, tooltip_header={
+                        "venta": "Suma de venta positiva del SKU. La tabla está ordenada desde la menor venta.",
+                        "cantidad": "Cantidad vendida en el período.",
+                        "stock": "Stock disponible actual; no es stock histórico.",
+                    }),
                 ], className="tab-content product-tables-full"),
             ]),
             dcc.Tab(label="Categorías", value="categorias", className="detail-tab", selected_className="detail-tab-selected", children=[
@@ -257,29 +304,42 @@ main = html.Main([
             dcc.Tab(label="Oportunidades", value="oportunidades", className="detail-tab", selected_className="detail-tab-selected", children=[
                 html.Div(className="tab-content", children=[
                     html.Div(id="oportunidades-resumen"),
-                    html.Div("SKU con stock y sin venta", className="subblock-title"),
+                    html.Div(label_with_tip("SKU con stock y sin venta YTD", "SKU que hoy maneja stock, tiene stock positivo y no registra venta positiva en todo el año actual. Respeta tienda, filtros y rack/pasillo seleccionado, pero no el mes/semana."), className="subblock-title"),
                     dash_table.DataTable(id="tabla-sinventa", **BASE_TABLE,
-                                         style_data_conditional=ACTION_STYLE),
+                                         style_data_conditional=ACTION_STYLE, tooltip_header={
+                                             "stock": "Stock disponible positivo en el snapshot actual.",
+                                             "venta_anio_anterior": "Venta del SKU en el año anterior disponible; se usa como señal para priorizar revisión.",
+                                             "accion": "Sugerencia según si vendía el año anterior y si su categoría tiene venta.",
+                                             "motivo": "Explicación de la señal que originó la acción.",
+                                         }),
                     html.Hr(className="soft-hr"),
-                    html.Div("Cross-sell y combos", className="subblock-title"),
-                    html.Div("Cross-sell se calcula con las boletas del año. Respeta la tienda y la sección seleccionada; el período mes/semana no recalcula los pares.",
+                    html.Div(label_with_tip("Productos que se compran juntos", "Cross-sell se calcula solo con transacciones de la tienda seleccionada y usando las boletas del año completo disponible. Mes/Semana no recalculan estas relaciones."), className="subblock-title"),
+                    html.Div("Ámbito: tienda seleccionada · año completo disponible. Si eliges un rack/pasillo, se muestran relaciones vinculadas a productos de esa sección.",
                              className="section-subtitle"),
                     html.Div([
                         html.Strong("Cómo leerlo: "),
-                        html.Span("Boletas juntas = veces que ambos productos aparecen en la misma compra · Confianza = de las compras con A, qué % también lleva B · Afinidad (lift) > 1 = se compran juntos más de lo esperable; 1 = sin asociación especial; < 1 = menos de lo esperable."),
+                        html.Span("Compras juntas = transacciones donde aparecen ambos productos. % A→B = de quienes compraron A, qué porcentaje también compró B. Afinidad = cuántas veces más (o menos) se compran juntos frente a lo esperable por su frecuencia normal."),
                     ], className="metric-explainer"),
                     dbc.Row([
                         dbc.Col([
                             dcc.Dropdown(id="combo-orden",
-                                         options=[{"label": "Más frecuentes", "value": "boletas"},
-                                                  {"label": "Mayor afinidad (lift)", "value": "lift"},
-                                                  {"label": "Mayor confianza", "value": "confianza"}],
+                                         options=[{"label": "Más compras juntas", "value": "boletas"},
+                                                  {"label": "Mayor afinidad vs esperado", "value": "lift"},
+                                                  {"label": "Mayor % de A que también lleva B", "value": "confianza"}],
                                          value="boletas", clearable=False),
-                            dash_table.DataTable(id="tabla-combos", **BASE_TABLE),
+                            dash_table.DataTable(id="tabla-combos", **BASE_TABLE, tooltip_header={
+                                "boletas": "Cantidad de transacciones de la tienda donde aparecen ambos productos.",
+                                "confianza_pct": "De todas las transacciones que contienen Producto A, porcentaje que también contiene Producto B.",
+                                "afinidad_txt": "Lift: P(B|A) / P(B). 2× = se compran juntos 2 veces más de lo esperable; 1× = sin asociación especial; <1× = menos de lo esperable.",
+                            }),
                         ], md=6),
                         dbc.Col([
                             dcc.Dropdown(id="combo-producto", placeholder="Buscar producto para ver qué se compra junto…"),
-                            dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE),
+                            dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE, tooltip_header={
+                                "boletas": "Cantidad de transacciones donde aparecen juntos el producto seleccionado y el relacionado.",
+                                "confianza_pct": "De las compras que contienen el producto seleccionado, porcentaje que también llevan este producto relacionado.",
+                                "afinidad_txt": "Lift: compara esa probabilidad con la frecuencia normal del producto relacionado en la tienda. 1× = esperado; >1× = asociación positiva.",
+                            }),
                         ], md=6),
                     ], className="g-3"),
                 ]),
@@ -289,7 +349,8 @@ main = html.Main([
 
     section("Contexto anual", [
         html.Div(id="comparativo-cards"),
-    ], subtitle="Contexto de tienda completa. No cambia con filtros de producto ni con el clic en un rack."),
+    ], subtitle="Comparativo agregado de la tienda completa. No cambia con filtros de producto ni con el clic en un rack.",
+       tooltip="Usa fact_comparativo_anio de la tienda: venta, transacciones, clientes únicos y ticket promedio por año disponible. Es contexto de tienda, no del rack seleccionado."),
 
     dcc.Download(id="download-detalle"),
     dcc.Download(id="download-sinventa"),
@@ -584,7 +645,7 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
         {"name": "Pasillo", "id": "pasillo"},
         {"name": "Rack", "id": "rack"},
         {"name": "Venta período", "id": "venta", "type": "numeric", "format": MONEY_FMT},
-        {"name": "Variación", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Variación venta", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
         {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Por qué", "id": "motivo"},
@@ -700,12 +761,16 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
                    if resumen.get("periodo_anterior") else "Sin período comparable con este nivel de filtro")
     kpis = [
         metric_card("Venta del período", fmt_money_short(resumen.get("venta")),
-                    "Respeta todos los filtros y la selección del mapa"),
-        metric_card("Variación", fmt_pct(var), prev_helper, var_tone),
+                    "Respeta tienda, período, filtros y selección",
+                    tooltip="Suma f.venta de todos los SKU que cumplen la tienda, el período, los filtros avanzados y, si existe, el rack/pasillo seleccionado."),
+        metric_card("Variación de venta", fmt_pct(var), prev_helper, var_tone,
+                    tooltip="Cálculo: (venta actual - venta comparable) / venta comparable × 100. Primero busca el mismo mes/semana del año anterior con los mismos filtros y sección; si no existe, usa el período anterior disponible del mismo año."),
         metric_card("Racks con venta", f"{int(resumen.get('racks') or 0):,}".replace(",", "."),
-                    f"{int(resumen.get('skus') or 0):,} SKU con venta".replace(",", ".")),
-        metric_card("Stock sin venta YTD", f"{sinventa_count:,}".replace(",", "."),
-                    "SKU con stock positivo y sin venta en el año", "bad" if sinventa_count else "good"),
+                    f"{int(resumen.get('skus') or 0):,} SKU con venta".replace(",", "."),
+                    tooltip="Cuenta racks distintos que tienen registros de venta en el período y universo filtrado. El texto inferior cuenta SKU distintos con venta, no todos los SKU físicamente asociados."),
+        metric_card("SKU con stock sin venta YTD", f"{sinventa_count:,}".replace(",", "."),
+                    "Stock > 0 y sin venta positiva en el año", "bad" if sinventa_count else "good",
+                    tooltip="Cuenta SKU que hoy manejan stock, tienen stock positivo y no registran ninguna venta positiva durante el año actual. Respeta tienda, filtros y sección seleccionada; no cambia por Mes/Semana."),
     ]
 
     fig_map = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion)
@@ -825,12 +890,12 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
     title = f"Rack {rack_f}" if rack_f else f"Pasillo {pasillo_f}"
     surtido = db.get_surtido_seccion(tienda, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
     metrics = html.Div([
-        html.Div([html.Span("Venta"), html.Strong(fmt_money_short(resumen.get("venta")))]),
-        html.Div([html.Span("Variación de venta"), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
-        html.Div([html.Span("SKU con venta"), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
-        html.Div([html.Span("SKU asociados hoy"), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
-        html.Div([html.Span("Unidades vendidas"), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
-        html.Div([html.Span("SKU con stock hoy"), html.Strong(f"{int(surtido.get('skus_con_stock') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("Venta del período", "Suma de venta de los SKU de esta sección que cumplen el período y filtros activos."), html.Strong(fmt_money_short(resumen.get("venta")))]),
+        html.Div([label_with_tip("Variación de venta", "(Venta del período - venta comparable) / venta comparable × 100. Debajo se indica exactamente cuál fue el período comparable."), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
+        html.Div([label_with_tip("SKU con venta", "Cantidad de códigos de producto distintos que registraron venta en esta sección durante el período seleccionado."), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("SKU asociados hoy", "Cantidad de SKU que el snapshot vigente de ubicación/surtido asocia hoy a este rack o pasillo, hayan vendido o no en el período."), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("Unidades vendidas", "Suma de la cantidad vendida de los SKU de esta sección en el período y filtros activos."), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
+        html.Div([label_with_tip("SKU con stock hoy", "Cantidad de SKU asociados hoy a la sección con stock disponible positivo en el snapshot vigente."), html.Strong(f"{int(surtido.get('skus_con_stock') or 0):,}".replace(",", "."))]),
     ], className="diagnostic-metrics")
 
     if resumen.get("periodo_anterior"):
@@ -848,7 +913,7 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
             r = match.iloc[0]
             action_box = html.Div([
                 html.Div([html.Span(r["prioridad"], className=f"priority-pill priority-{r['prioridad'].lower()}"),
-                          html.Span("Recomendación del período", className="diagnostic-kicker")], className="action-hero-top"),
+                          html.Span(label_with_tip("Recomendación del período", "No usa margen. La regla compara el rack contra otros racks del mismo universo filtrado usando percentil de venta, variación, SKU con venta y venta por SKU."), className="diagnostic-kicker")], className="action-hero-top"),
                 html.H4(r["accion"], className="diagnostic-action"),
                 html.P(r["motivo"], className="diagnostic-text"),
                 html.P(r["recomendacion"], className="diagnostic-recommendation"),
@@ -884,7 +949,7 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
                 ], className="category-values"),
             ], className="category-row"))
         category_box = html.Div([
-            html.Div("Categorías asociadas a esta sección", className="diagnostic-kicker"),
+            html.Div(label_with_tip("Categorías asociadas a esta sección", "Agrupa por categoría el surtido vigente asociado al rack/pasillo y suma la venta del período. La fracción SKU con venta / SKU asociados permite ver cuánta parte del surtido está aportando venta."), className="diagnostic-kicker"),
             html.Div("Incluye el surtido vigente; la fracción indica SKU con venta / SKU asociados.", className="diagnostic-hint"),
             *cat_rows,
         ], className="diagnostic-category-box")
@@ -1115,14 +1180,14 @@ def _combos_top(tienda, orden, seleccion):
     df = db.get_top_combos(tienda, n=40, orden=orden, pasillo=pasillo_f, rack=rack_f)
     if not df.empty:
         df = df.copy()
-        df["soporte_pct"] = pd.to_numeric(df["soporte"], errors="coerce") * 100
         df["confianza_pct"] = pd.to_numeric(df["confianza_a_b"], errors="coerce") * 100
+        lift_num = pd.to_numeric(df["lift"], errors="coerce")
+        df["afinidad_txt"] = lift_num.apply(lambda x: f"{x:.1f}×".replace(".", ",") if pd.notna(x) else "—")
     cols = [
         {"name": "Producto A", "id": "desc_a"}, {"name": "Producto B", "id": "desc_b"},
-        {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
-        {"name": "% boletas con ambos", "id": "soporte_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "% de A que también lleva B", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "Afinidad (lift)", "id": "lift", "type": "numeric"},
+        {"name": "Compras juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
+        {"name": "% A → B", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad vs esperado", "id": "afinidad_txt"},
     ]
     return clean_records(df), cols
 
@@ -1144,11 +1209,13 @@ def _combos_producto(tienda, sku):
     if not df.empty:
         df = df.copy()
         df["confianza_pct"] = pd.to_numeric(df["confianza"], errors="coerce") * 100
+        lift_num = pd.to_numeric(df["lift"], errors="coerce")
+        df["afinidad_txt"] = lift_num.apply(lambda x: f"{x:.1f}×".replace(".", ",") if pd.notna(x) else "—")
     cols = [
         {"name": "Se compra junto con", "id": "producto"},
-        {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
-        {"name": "% de compras que también lo llevan", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "Afinidad (lift)", "id": "lift", "type": "numeric"},
+        {"name": "Compras juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
+        {"name": "% de compras del producto seleccionado que también llevan este", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad vs esperado", "id": "afinidad_txt"},
     ]
     return clean_records(df), cols
 
