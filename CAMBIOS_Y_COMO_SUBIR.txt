@@ -1,0 +1,27 @@
+ARCHIVOS PRINCIPALES PARA SUBIR AL REPO mt2
+
+1) app.py
+2) db.py
+3) agente_rentabilidad_rack.py
+4) assets/style.css
+
+Opcional: reemplazar README.md.
+
+FORMA SIMPLE DESDE GITHUB.COM
+- Entra al repo FernaRios1/mt2.
+- Abre app.py -> editar/reemplazar contenido o usa Add file -> Upload files.
+- Haz lo mismo con db.py y agente_rentabilidad_rack.py.
+- Entra a la carpeta assets y reemplaza style.css.
+- Commit changes en main.
+- Railway debería iniciar un deployment automáticamente.
+
+ANTES DE CAMBIAR
+Conviene conservar el commit actual para poder volver atrás. GitHub ya mantiene el historial, por lo que no necesitas borrar la versión anterior.
+
+DESPUÉS DEL DEPLOY
+Revisar:
+- que cargue SANRO;
+- que aparezca el Centro de acciones;
+- que el plano muestre racks;
+- que al hacer clic en una fila o punto cambie el Diagnóstico;
+- que la pestaña Oportunidades muestre stock sin venta y cross-sell.

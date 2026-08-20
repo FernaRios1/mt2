@@ -1,91 +1,65 @@
-# Rentabilidad Rack — Imperial Ferretería (Dash)
+# Desempeño de Racks — Imperial (Dash)
 
-Dashboard de venta/margen por pasillo y rack, con mapa de calor interactivo
-(clic en un punto filtra toda la página), recomendación de espacio,
-comparativo año a la fecha vs año anterior, y cross-sell/combos.
-Python + Dash + Postgres, para desplegar en Railway.
+Dashboard de decisión para pasillos/racks. La interfaz está diseñada para responder en este orden:
 
-## Qué hay en esta carpeta
+1. **Qué requiere atención**.
+2. **Por qué lo recomienda**.
+3. **Dónde está en el plano**.
+4. **Qué productos/categorías explican el resultado**.
+5. **Qué acción comercial o de surtido revisar**.
 
+La app usa Python + Dash + Postgres y se despliega en Railway desde GitHub.
+
+## Cambios de esta versión
+
+- Centro de acciones YTD con prioridad **Alta / Media / Baja**.
+- Recomendaciones explicables por rack:
+  - **Proteger venta**: rack relevante que viene cayendo.
+  - **Revisar rack**: baja venta + caída.
+  - **Potenciar rack**: alta venta + crecimiento (o alta eficiencia cuando hay filtros).
+  - **Optimizar surtido**: muchos SKU para una venta bajo la mediana.
+  - **Mantener**: sin señal fuerte.
+- El panel evita afirmar “rentabilidad” mientras el margen siga en $0. Se muestra **Modo desempeño**.
+- KPIs del período con comparación contra período anterior.
+- Mapa interactivo: clic en rack/pasillo abre diagnóstico y filtra el detalle.
+- Navegación por pestañas: Racks, Productos, Categorías y Oportunidades.
+- Productos con stock y sin venta priorizados con acción y motivo.
+- Cross-sell queda como oportunidad comercial, separado de las decisiones de espacio.
+- Año actual dinámico: ya no está fijo en 2026.
+- El agente ahora refresca también `fact_pasillo_rack_anio` y `fact_producto_anio` para que las recomendaciones no queden congeladas en los seeds.
+
+## Importante sobre el motor de recomendaciones
+
+Por ahora **no existe una medida confiable de margen ni metros/m² de rack**. Por eso el motor no inventa una rentabilidad ni dice que un rack “debe” aumentar físicamente su espacio como hecho. En los racks fuertes propone **evaluar** más caras/exhibición, y en los débiles propone revisar surtido/espacio.
+
+Cuando se incorpore margen y una medida de espacio, el paso natural es agregar `margen/m²`, `venta/m²` y un score económico real.
+
+## Archivos a reemplazar en GitHub
+
+- `app.py`
+- `db.py`
+- `agente_rentabilidad_rack.py`
+- `assets/style.css`
+- `README.md` (opcional, solo documentación)
+
+No necesitas cambiar `Dockerfile`, `Procfile`, `schema.sql`, `auth.py` ni `requirements.txt` para este rediseño.
+
+## Deploy
+
+Railway está conectado al repo de GitHub. Después de subir/commitear los archivos anteriores a `main`, Railway debería lanzar un nuevo deployment automáticamente.
+
+Comando de arranque esperado:
+
+```bash
+gunicorn app:server --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 ```
-app.py                          -- app Dash completa (dashboard + admin de planos)
-auth.py                         -- contraseña simple
-db.py                           -- todas las queries a Postgres + carga inicial automática
-schema.sql                      -- estructura de la base
-agente_rentabilidad_rack.py     -- se agenda con Task Scheduler para mantenerla al día
-assets/style.css                -- tema oscuro/ámbar (Dash carga esta carpeta solo)
-requirements.txt
-seed_*.csv(.gz) / seed_plano_sanro.png   -- datos reales ya extraídos de tu pbix
-```
 
-## 1. Por qué Dash y no Streamlit
+Variables:
 
-Streamlit reconstruye toda la página en cada interacción, lo que hace difícil
-un patrón como "clic en el mapa filtra las demás tablas" sin que se sienta
-lento o se pierda estado. Dash usa callbacks reales (como una app web
-tradicional) — el clic en el mapa dispara solo las actualizaciones necesarias,
-y el CSS es HTML/CSS de verdad (nada de los problemas de renderizado que
-tuvimos con el CSS de Streamlit mostrándose como texto).
+- `DATABASE_URL`: referencia al Postgres del proyecto.
+- `APP_PASSWORD`: contraseña de acceso al dashboard.
+- Para el agente local: `SQLSERVER_DSN` y `DATABASE_URL`.
 
-## 2. Desplegar en Railway
+## Sincronización
 
-1. Sube esta carpeta a un repo de GitHub (o usa el CLI de Railway:
-   `npm i -g @railway/cli`, `railway login`, `railway up` parado aquí).
-2. En Railway: **New Project → Add a service → Database → PostgreSQL.**
-3. **Add a service → GitHub Repo** (este repo) o despliega con el CLI.
-4. En el servicio de la app, pestaña **Variables**:
-   - `DATABASE_URL` → referencia al servicio de Postgres (botón "Reference variable").
-   - `APP_PASSWORD` → la contraseña para entrar al panel.
-   - `ALLOWED_IPS` → (opcional) IP fija de Imperial, si la consigues — ver más abajo.
-5. **Settings → Deploy**, comando de arranque:
-   ```
-   gunicorn app:server --bind 0.0.0.0:$PORT --workers 2 --timeout 120
-   ```
-6. Railway entrega una URL pública — esa es la que comparten con el equipo.
-
-## 3. La base se prepara sola
-
-La primera vez que alguien abre la app con la base vacía, `db.ensure_ready()`
-crea las tablas y carga los datos reales de `seed_*` (año 2026, ya con
-familia/categoría/marca/stock/clasificación, comparativo 2025 vs 2026, y
-5.000+ combinaciones de cross-sell). Tarda unos segundos la primera vez;
-después no vuelve a tocar nada si detecta que ya hay datos.
-
-## 4. Mantenerla al día
-
-`agente_rentabilidad_rack.py` se agenda con el **Task Scheduler de Windows**
-en un equipo con acceso a tu SQL Server (Railway no llega directo a tu red
-interna). Cada corrida:
-- trae venta/stock/marca/clasificación del año actual,
-- recalcula pasillo/rack con la regla `Etiqueta_base` (validada, 99.2% exacta),
-- recalcula el comparativo año a la fecha (venta, trx, clientes únicos vía `cod_entidad`),
-- **recalcula todo el cross-sell** (soporte/confianza/lift) — medí esto contra
-  el volumen real de boletas de 2026 (912 mil boletas, 13 tiendas) y tarda
-  **~12 segundos**, así que correrlo a diario no debería ser un problema.
-
-No lo pude probar contra tu SQL Server real — alguien con acceso tiene que
-correrlo una vez a mano primero y avisarme si algún nombre de columna no
-calza (`Marca`, `Stock_Disponible` y `cod_entidad` ya los confirmaste; el
-resto sigue el mismo patrón de `mt2s.sql`).
-
-## 5. Ir agregando el resto de las tiendas
-
-Entra a **Administrar Planos** (link en el sidebar), elige la tienda, sube
-la imagen del plano y un CSV con columnas `pasillo,x,y` o `rack,x,y` según
-el nivel que quieras cargar. El mapa de calor de esa tienda queda funcionando
-solo, sin tocar código.
-
-## 6. Acceso restringido a la red de Imperial
-
-Railway no tiene "solo esta IP" nativo en el plan gratis. Lo que dejé:
-- **Contraseña obligatoria** (`APP_PASSWORD`) — el mínimo, siempre activo.
-- **Allowlist de IP opcional** — si consigues la IP pública fija de la
-  oficina, dime y te agrego la validación (queda listo el esqueleto en
-  `auth.py`, solo falta engancharlo a un header `X-Forwarded-For` del proxy
-  de Railway).
-
-## 7. Bug de margen (heredado del origen)
-
-El margen sigue en $0 porque el JOIN de costo en el SQL original tiene
-`AND 1 = 0`. La venta es real; corrígelo en el origen cuando puedas y el
-agente lo recoge solo la próxima vez que corra.
+`agente_rentabilidad_rack.py` debe correr en un equipo Windows con acceso al SQL Server interno. Cada corrida actualiza el año actual, dimensiones, comparativos y cross-sell. La tabla de plano/coordenadas sigue administrándose desde la propia web.

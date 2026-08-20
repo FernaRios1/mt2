@@ -3,6 +3,7 @@ import os
 
 import dash
 from dash import dcc, html, Input, Output, State, dash_table, callback_context
+from dash.dash_table.Format import Format, Group, Scheme, Symbol
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import pandas as pd
@@ -10,155 +11,274 @@ import pandas as pd
 import db
 from auth import check_password
 
-FMT = lambda n: f"${n:,.0f}".replace(",", ".") if pd.notna(n) else "—"
+
+# =========================
+# Formatos / utilidades
+# =========================
+def fmt_money(n):
+    if n is None or pd.isna(n):
+        return "—"
+    return f"${float(n):,.0f}".replace(",", ".")
+
+
+def fmt_money_short(n):
+    if n is None or pd.isna(n):
+        return "—"
+    n = float(n)
+    if abs(n) >= 1_000_000:
+        return f"${n / 1_000_000:,.0f} MM".replace(",", ".")
+    return fmt_money(n)
+
+
+def fmt_pct(n, signed=True):
+    if n is None or pd.isna(n):
+        return "—"
+    return f"{float(n):+.1f}%" if signed else f"{float(n):.1f}%"
+
+
+def clean_records(df):
+    if df is None or df.empty:
+        return []
+    return df.astype(object).where(pd.notna(df), None).to_dict("records")
+
+
+MONTHS = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+MONEY_FMT = Format(precision=0, scheme=Scheme.fixed, group=Group.yes,
+                   symbol=Symbol.yes, symbol_prefix="$")
+PCT_FMT = Format(precision=1, scheme=Scheme.fixed, group=Group.yes,
+                 symbol=Symbol.yes, symbol_suffix="%")
+NUM_FMT = Format(precision=0, scheme=Scheme.fixed, group=Group.yes)
+
 FILTER_KEYS = ["familia", "categoria", "clasificacion", "zona_pck", "responsable_linea", "marca", "maneja_stock"]
 
+
+# =========================
+# App
+# =========================
 app = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.FLATLY,
-                           "https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@700;800"
-                           "&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"],
-    title="Rentabilidad Rack — Imperial",
+    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    title="Desempeño de Racks — Imperial",
     suppress_callback_exceptions=True,
 )
 server = app.server
 
-TABLE_STYLE = dict(
+BASE_TABLE = dict(
     style_as_list_view=True,
-    style_header={"backgroundColor": "#F7F8F7", "fontWeight": "700", "fontSize": "11px",
-                   "textTransform": "uppercase", "letterSpacing": ".04em", "color": "#5B6B79",
-                   "border": "none", "borderBottom": "1px solid #DCE1E0"},
-    style_cell={"fontFamily": "Barlow, sans-serif", "fontSize": "13px", "padding": "7px 10px",
-                "border": "none", "borderBottom": "1px solid #EEF0EF", "textAlign": "left"},
-    style_data={"backgroundColor": "white"},
-    page_size=12,
+    style_header={
+        "backgroundColor": "#F8FAFC", "fontWeight": "700", "fontSize": "11px",
+        "textTransform": "uppercase", "letterSpacing": ".04em", "color": "#64748B",
+        "border": "none", "borderBottom": "1px solid #E2E8F0",
+    },
+    style_cell={
+        "fontFamily": "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        "fontSize": "13px", "padding": "10px 12px", "border": "none",
+        "borderBottom": "1px solid #EEF2F7", "textAlign": "left",
+        "whiteSpace": "normal", "height": "auto", "minWidth": "80px", "maxWidth": "360px",
+    },
+    style_data={"backgroundColor": "white", "color": "#0F172A"},
+    page_size=10,
     sort_action="native",
-    filter_action="native",
     export_format="csv",
+    locale_format={"group": ".", "decimal": ","},
 )
 
+ACTION_STYLE = [
+    {"if": {"filter_query": '{prioridad} = "Alta"', "column_id": "prioridad"},
+     "backgroundColor": "#FEE2E2", "color": "#991B1B", "fontWeight": "700"},
+    {"if": {"filter_query": '{prioridad} = "Media"', "column_id": "prioridad"},
+     "backgroundColor": "#FEF3C7", "color": "#92400E", "fontWeight": "700"},
+    {"if": {"filter_query": '{accion} = "Potenciar rack"', "column_id": "accion"},
+     "color": "#047857", "fontWeight": "700"},
+    {"if": {"filter_query": '{accion} = "Proteger venta"', "column_id": "accion"},
+     "color": "#B45309", "fontWeight": "700"},
+    {"if": {"filter_query": '{accion} = "Revisar rack"', "column_id": "accion"},
+     "color": "#B91C1C", "fontWeight": "700"},
+    {"if": {"state": "active"}, "backgroundColor": "#FFF7ED", "border": "1px solid #FDBA74"},
+]
 
-def kpi_card(id_prefix):
-    return dbc.Card(dbc.CardBody([
-        html.Div(id=f"{id_prefix}-value", className="kpi-value"),
-        html.Div(id=f"{id_prefix}-label", className="kpi-label"),
-    ]), className="kpi-card")
+
+def section(title, children, subtitle=None, class_name="section-panel"):
+    head = [html.Div([
+        html.H2(title, className="section-title"),
+        html.Div(subtitle, className="section-subtitle") if subtitle else None,
+    ], className="section-head")]
+    return html.Section([*head, *children], className=class_name)
 
 
-def section(title, children, subtitle=None):
-    head = [html.H2(title, className="section-title")]
-    if subtitle:
-        head.append(html.Div(subtitle, className="section-subtitle"))
-    return html.Div([*head, *children], className="section-panel")
+def metric_card(label, value, helper=None, tone="default"):
+    return html.Div([
+        html.Div(label, className="metric-label"),
+        html.Div(value, className="metric-value"),
+        html.Div(helper, className=f"metric-helper metric-{tone}") if helper else None,
+    ], className="metric-card")
 
 
-# ---------------- Layout ----------------
-sidebar = html.Div([
+def make_filters(maneja_sel, familia, categoria, clasificacion, zona_pck, responsable_linea, marca):
+    return {
+        "familia": familia or [],
+        "categoria": categoria or [],
+        "clasificacion": clasificacion or [],
+        "zona_pck": zona_pck or [],
+        "responsable_linea": responsable_linea or [],
+        "marca": marca or [],
+        "maneja_stock": ["S"] if maneja_sel == "Sí" else ["N"] if maneja_sel == "No" else [],
+    }
+
+
+# =========================
+# Layout principal
+# =========================
+sidebar = html.Aside([
     html.Div([
-        html.Div("🔧 RENTABILIDAD RACK", className="brand-mark"),
-        html.Div("Imperial Ferretería · venta por sección", className="brand-sub"),
+        html.Div("IMPERIAL", className="brand-eyebrow"),
+        html.Div("Desempeño de Racks", className="brand-mark"),
+        html.Div("Decisiones de espacio y surtido", className="brand-sub"),
     ], className="brand"),
 
     html.Div("Tienda", className="side-label"),
     dcc.Dropdown(id="f-tienda", clearable=False, className="side-dd"),
 
-    html.Hr(className="side-hr"),
-    html.Div("Ver por", className="side-label"),
-    dcc.RadioItems(id="f-modo-periodo", options=["Mes", "Semana", "Año completo"], value="Mes",
-                    className="side-radio", labelClassName="side-radio-item"),
+    html.Div("Período", className="side-label side-gap"),
+    dcc.RadioItems(
+        id="f-modo-periodo",
+        options=[{"label": "Mes", "value": "Mes"}, {"label": "Semana", "value": "Semana"},
+                 {"label": "Año", "value": "Año completo"}],
+        value="Mes", className="period-segment", labelClassName="period-option",
+        inputClassName="period-input",
+    ),
     dcc.Dropdown(id="f-mes", clearable=False, className="side-dd"),
     dcc.Dropdown(id="f-semana", clearable=False, className="side-dd", style={"display": "none"}),
 
-    html.Hr(className="side-hr"),
-    html.Div("Filtros de producto", className="side-label side-label-strong"),
-    dcc.Dropdown(id="f-familia", multi=True, placeholder="Familia", className="side-dd"),
-    dcc.Dropdown(id="f-categoria", multi=True, placeholder="Categoría", className="side-dd"),
-    dcc.Dropdown(id="f-clasificacion", multi=True, placeholder="Clasificación SKU", className="side-dd"),
-    dcc.Dropdown(id="f-zona_pck", multi=True, placeholder="Zona de picking", className="side-dd"),
-    dcc.Dropdown(id="f-responsable_linea", multi=True, placeholder="Jefe de línea", className="side-dd"),
-    dcc.Dropdown(id="f-marca", multi=True, placeholder="Marca", className="side-dd"),
-    dcc.RadioItems(id="f-maneja_stock", options=["Todos", "Sí", "No"], value="Todos",
-                    className="side-radio", labelClassName="side-radio-item"),
+    html.Details([
+        html.Summary("Filtros avanzados", className="filters-summary"),
+        html.Div([
+            dcc.Dropdown(id="f-familia", multi=True, placeholder="Familia", className="side-dd"),
+            dcc.Dropdown(id="f-categoria", multi=True, placeholder="Categoría", className="side-dd"),
+            dcc.Dropdown(id="f-clasificacion", multi=True, placeholder="Clasificación SKU", className="side-dd"),
+            dcc.Dropdown(id="f-zona_pck", multi=True, placeholder="Zona de picking", className="side-dd"),
+            dcc.Dropdown(id="f-responsable_linea", multi=True, placeholder="Jefe de línea", className="side-dd"),
+            dcc.Dropdown(id="f-marca", multi=True, placeholder="Marca", className="side-dd"),
+            html.Div("Maneja stock", className="side-mini-label"),
+            dcc.RadioItems(id="f-maneja_stock", options=["Todos", "Sí", "No"], value="Todos",
+                           className="side-radio", labelClassName="side-radio-item"),
+        ], className="advanced-filters"),
+    ], className="filters-details"),
 
-    html.Hr(className="side-hr"),
-    html.Hr(className="side-hr"),
-    dcc.Link("🗺️ Administrar planos", href="/admin", className="side-navlink"),
-
-    html.Div(id="seleccion-mapa-info", className="side-selection"),
-
-    html.Hr(className="side-hr"),
-    html.Div("Datos sincronizados por el agente de escritorio — no en vivo minuto a minuto.",
+    html.Div(className="sidebar-spacer"),
+    dcc.Link("Administrar planos", href="/admin", className="side-navlink"),
+    html.Div("Las recomendaciones usan venta, tendencia y surtido. El margen se incorporará cuando esté disponible.",
              className="side-foot"),
 ], className="sidebar")
 
-main = html.Div([
+
+action_table = dash_table.DataTable(
+    id="tabla-acciones-rack",
+    **BASE_TABLE,
+    page_size=8,
+    style_data_conditional=ACTION_STYLE,
+    cell_selectable=True,
+)
+
+main = html.Main([
     html.Div(id="header-tienda"),
-    html.Div(id="kpi-row"),
-    html.Div(id="margen-warning"),
+    html.Div(id="margen-status"),
+    html.Div(id="kpi-row", className="metric-grid"),
 
-    section("Venta sobre el plano", [
-        dbc.RadioItems(id="f-nivel-mapa", options=["Pasillo", "Rack"], value="Pasillo",
-                        inline=True, className="nivel-toggle"),
-        html.Div("Haz clic en un punto para filtrar todo el resto de la página por esa sección "
-                  "— clic de nuevo (o \"Quitar selección\") para volver a ver todo.",
-                  className="section-subtitle"),
-        dcc.Graph(id="mapa-calor", config={"displayModeBar": False}),
-    ]),
+    section("Qué hacer primero", [
+        html.Div(id="action-summary"),
+        html.Div("Haz clic en una fila para analizar ese rack.", className="micro-help"),
+        action_table,
+    ], subtitle="Prioriza señales YTD. No recomienda por intuición: cada acción muestra el motivo que la dispara."),
 
     dbc.Row([
-        dbc.Col(section("Venta por pasillo", [dash_table.DataTable(id="tabla-pasillos", **TABLE_STYLE)]), md=6),
-        dbc.Col(section("Detalle por rack", [dash_table.DataTable(id="tabla-racks", **TABLE_STYLE)]), md=6),
+        dbc.Col(section("Mapa de la tienda", [
+            html.Div([
+                dbc.RadioItems(id="f-nivel-mapa", options=["Pasillo", "Rack"], value="Rack",
+                               inline=True, className="nivel-toggle"),
+                html.Div(id="coord-status"),
+            ], className="map-toolbar"),
+            dcc.Graph(id="mapa-calor", config={"displayModeBar": False, "scrollZoom": False}),
+        ], subtitle="El tamaño y color muestran venta del período. Haz clic para abrir el diagnóstico de una sección."), md=8),
+        dbc.Col([
+            section("Diagnóstico", [
+                html.Div(id="selection-panel"),
+                html.Button("Quitar selección", id="btn-clear-selection", n_clicks=0, className="ghost-button"),
+            ], subtitle="La recomendación usa YTD; los KPIs del diagnóstico respetan el período elegido."),
+            section("Tendencia semanal", [
+                dcc.Graph(id="tendencia-semanal", config={"displayModeBar": False}),
+            ], class_name="section-panel compact-panel"),
+        ], md=4),
     ], className="g-3"),
 
-    section("Recomendación de espacio por pasillo/rack", [
-        html.Div(id="recom-resumen"),
-        dash_table.DataTable(id="tabla-recomendacion", **TABLE_STYLE),
-    ], subtitle="Compara año a la fecha contra el mismo rango de semanas del año anterior."),
+    section("Explorar el porqué", [
+        dcc.Tabs(id="tabs-detalle", value="racks", className="detail-tabs", children=[
+            dcc.Tab(label="Racks y pasillos", value="racks", className="detail-tab", selected_className="detail-tab-selected", children=[
+                dbc.Row([
+                    dbc.Col([
+                        html.Div("Racks", className="subblock-title"),
+                        dash_table.DataTable(id="tabla-racks", **BASE_TABLE),
+                    ], md=7),
+                    dbc.Col([
+                        html.Div("Pasillos", className="subblock-title"),
+                        dash_table.DataTable(id="tabla-pasillos", **BASE_TABLE),
+                    ], md=5),
+                ], className="g-3 tab-content"),
+            ]),
+            dcc.Tab(label="Productos", value="productos", className="detail-tab", selected_className="detail-tab-selected", children=[
+                dbc.Row([
+                    dbc.Col([
+                        html.Div("Productos que explican la venta", className="subblock-title"),
+                        dash_table.DataTable(id="tabla-top", **BASE_TABLE),
+                    ], md=6),
+                    dbc.Col([
+                        html.Div("Baja contribución con venta", className="subblock-title"),
+                        dash_table.DataTable(id="tabla-baja", **BASE_TABLE),
+                    ], md=6),
+                ], className="g-3 tab-content"),
+            ]),
+            dcc.Tab(label="Categorías", value="categorias", className="detail-tab", selected_className="detail-tab-selected", children=[
+                html.Div([
+                    html.Div("Familia → jefe de línea → categoría", className="subblock-title"),
+                    dcc.Graph(id="treemap-familia", config={"displayModeBar": False}),
+                ], className="tab-content"),
+            ]),
+            dcc.Tab(label="Oportunidades", value="oportunidades", className="detail-tab", selected_className="detail-tab-selected", children=[
+                html.Div(className="tab-content", children=[
+                    html.Div(id="oportunidades-resumen"),
+                    html.Div("SKU con stock y sin venta", className="subblock-title"),
+                    dash_table.DataTable(id="tabla-sinventa", **BASE_TABLE, page_size=10,
+                                         style_data_conditional=ACTION_STYLE),
+                    html.Hr(className="soft-hr"),
+                    html.Div("Cross-sell y combos", className="subblock-title"),
+                    html.Div("Se usa como oportunidad comercial, no como sustituto de una recomendación de espacio.",
+                             className="section-subtitle"),
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="combo-orden",
+                                         options=[{"label": "Más frecuentes", "value": "boletas"},
+                                                  {"label": "Mayor lift", "value": "lift"},
+                                                  {"label": "Mayor confianza", "value": "confianza"}],
+                                         value="boletas", clearable=False),
+                            dash_table.DataTable(id="tabla-combos", **BASE_TABLE, page_size=8),
+                        ], md=6),
+                        dbc.Col([
+                            dcc.Dropdown(id="combo-producto", placeholder="Buscar producto para ver qué se compra junto…"),
+                            dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE, page_size=8),
+                        ], md=6),
+                    ], className="g-3"),
+                ]),
+            ]),
+        ]),
+    ], subtitle="El clic del mapa o de la cola de acciones filtra el detalle para explicar qué está pasando."),
 
-    section("Venta por familia → jefe de línea → categoría", [
-        dcc.Graph(id="treemap-familia", config={"displayModeBar": False}),
-    ], subtitle="Bloques navegables — haz clic para entrar a cada nivel."),
-
-    html.Div(id="sin-coordenadas-panel"),
-
-    dbc.Row([
-        dbc.Col(section("Top productos", [
-            dash_table.DataTable(id="tabla-top", **TABLE_STYLE)]), md=6),
-        dbc.Col(section("Menor venta (con transacciones)", [
-            dash_table.DataTable(id="tabla-baja", **TABLE_STYLE)]), md=6),
-    ], className="g-3"),
-
-    section("Con stock, sin venta este año — acciones sugeridas", [
-        html.Span("candidatos a cambiar", className="badge-bad"),
-        html.Div(id="acciones-resumen"),
-        dash_table.DataTable(id="tabla-sinventa", **TABLE_STYLE),
-    ], subtitle="No respeta el filtro de mes/semana del sidebar (usa el año completo) ni el clic en el mapa "
-                "— porque un producto sin ninguna venta este año no tiene un pasillo conocido para ubicarlo."),
-
-    section("Comparativo año a la fecha vs año anterior", [
+    section("Contexto anual", [
         html.Div(id="comparativo-cards"),
-    ]),
-
-    section("Cross-sell y combos", [
-        html.Div("Calculado sobre las boletas del año — pares de productos con más soporte/confianza/lift.",
-                  className="section-subtitle"),
-        dbc.Row([
-            dbc.Col([
-                html.Div("Top combinaciones de la tienda", className="subblock-title"),
-                dcc.Dropdown(id="combo-orden",
-                             options=[{"label": "Más frecuentes", "value": "boletas"},
-                                      {"label": "Mayor lift", "value": "lift"},
-                                      {"label": "Mayor confianza", "value": "confianza"}],
-                             value="boletas", clearable=False, className="side-dd"),
-                dash_table.DataTable(id="tabla-combos", **TABLE_STYLE),
-            ], md=6),
-            dbc.Col([
-                html.Div("Buscar combinaciones de un producto", className="subblock-title"),
-                dcc.Dropdown(id="combo-producto", placeholder="Elige un producto…"),
-                dash_table.DataTable(id="tabla-combos-producto", **TABLE_STYLE),
-            ], md=6),
-        ], className="g-3"),
-    ]),
+    ], subtitle="Venta, transacciones, ticket y clientes contra el año anterior al mismo corte disponible en la base."),
 
     dcc.Store(id="store-seleccion", data=None),
 ], className="main")
@@ -171,52 +291,56 @@ app.layout = html.Div([
 
 login_layout = html.Div([
     html.Div([
-        html.Div("🔧 RENTABILIDAD RACK", className="brand-mark", style={"color": "#1B2430"}),
-        html.P("Imperial Ferretería", style={"color": "#5B6B79", "marginBottom": "18px"}),
+        html.Div("IMPERIAL", className="brand-eyebrow"),
+        html.H1("Desempeño de Racks", className="login-title"),
+        html.P("Ingresa para continuar", className="login-subtitle"),
         dcc.Input(id="login-pwd", type="password", placeholder="Contraseña", className="login-input"),
-        html.Button("Entrar", id="login-btn", className="login-btn"),
-        html.Div(id="login-error", style={"color": "#C4432B", "marginTop": "10px", "fontSize": "13px"}),
+        html.Button("Entrar", id="login-btn", className="primary-button"),
+        html.Div(id="login-error", className="login-error"),
     ], className="login-box")
 ], className="login-wrap")
 
 dashboard_layout = html.Div([sidebar, main], className="shell")
 
-admin_sidebar = html.Div([
+
+# =========================
+# Admin de planos (se mantiene simple)
+# =========================
+admin_sidebar = html.Aside([
     html.Div([
-        html.Div("🗺️ ADMINISTRAR PLANOS", className="brand-mark"),
-        html.Div("Sube el plano y coordenadas de cada tienda", className="brand-sub"),
+        html.Div("IMPERIAL", className="brand-eyebrow"),
+        html.Div("Administrar Planos", className="brand-mark"),
+        html.Div("Imagen + coordenadas", className="brand-sub"),
     ], className="brand"),
-    dcc.Link("← Volver al dashboard", href="/", className="side-navlink"),
-    html.Hr(className="side-hr"),
-    html.Div("Tienda", className="side-label"),
+    dcc.Link("Volver al dashboard", href="/", className="side-navlink"),
+    html.Div("Tienda", className="side-label side-gap"),
     dcc.Dropdown(id="admin-tienda", clearable=False, className="side-dd"),
 ], className="sidebar")
 
-admin_main = html.Div([
-    html.H1("Administrar planos"),
+admin_main = html.Main([
+    html.Div([html.H1("Administrar planos", className="page-title")], className="page-header"),
     section("1. Imagen del plano", [
         dcc.Upload(id="admin-upload-imagen", children=html.Div(["Arrastra o ", html.A("elige un archivo")]),
-                    className="upload-box", accept="image/png,image/jpeg"),
+                   className="upload-box", accept="image/png,image/jpeg"),
         html.Div(id="admin-imagen-preview"),
-        html.Button("Guardar plano", id="admin-guardar-plano", className="login-btn", style={"width": "200px", "marginTop": "10px"}),
+        html.Button("Guardar plano", id="admin-guardar-plano", className="primary-button small-button"),
         html.Div(id="admin-plano-msg"),
     ]),
     section("2. Coordenadas", [
         dbc.RadioItems(id="admin-nivel", options=["Pasillo", "Rack"], value="Pasillo", inline=True),
-        html.Div("Sube un CSV con columnas pasillo|rack, x, y (posición en píxeles sobre la imagen; "
-                  "esquina superior izquierda = 0,0).", className="section-subtitle"),
+        html.Div("CSV con columnas pasillo|rack, x, y. La esquina superior izquierda es 0,0.", className="section-subtitle"),
         dcc.Upload(id="admin-upload-csv", children=html.Div(["Arrastra o ", html.A("elige un CSV")]),
-                    className="upload-box", accept=".csv"),
-        html.Button("Guardar coordenadas", id="admin-guardar-coords", className="login-btn", style={"width": "220px", "marginTop": "10px"}),
+                   className="upload-box", accept=".csv"),
+        html.Button("Guardar coordenadas", id="admin-guardar-coords", className="primary-button small-button"),
         html.Div(id="admin-coords-msg"),
     ]),
     section("Coordenadas actuales", [
         dbc.Row([
             dbc.Col([html.Div("Por pasillo", className="subblock-title"),
-                     dash_table.DataTable(id="admin-tabla-pasillo", **TABLE_STYLE)], md=6),
+                     dash_table.DataTable(id="admin-tabla-pasillo", **BASE_TABLE)], md=6),
             dbc.Col([html.Div("Por rack", className="subblock-title"),
-                     dash_table.DataTable(id="admin-tabla-rack", **TABLE_STYLE)], md=6),
-        ]),
+                     dash_table.DataTable(id="admin-tabla-rack", **BASE_TABLE)], md=6),
+        ], className="g-3"),
     ]),
     dcc.Store(id="admin-imagen-store"),
 ], className="main")
@@ -224,7 +348,9 @@ admin_main = html.Div([
 admin_layout = html.Div([admin_sidebar, admin_main], className="shell")
 
 
-# ================= Routing / login =================
+# =========================
+# Routing / login
+# =========================
 @app.callback(Output("page-content", "children"), Input("store-auth", "data"), Input("url", "pathname"))
 def _route(auth_ok, pathname):
     if not auth_ok:
@@ -244,7 +370,9 @@ def _login(n, pwd):
     return False, "Contraseña incorrecta."
 
 
-# ================= Inicialización de datos (una vez al levantar el server) =================
+# =========================
+# Inicialización
+# =========================
 _INIT_DONE = {"ok": False}
 
 
@@ -260,11 +388,12 @@ def _init_tiendas(auth_ok):
         return [], None
     _lazy_init()
     tiendas = db.get_tiendas()
-    opts = [{"label": f"{r.cod_tienda} — {r.tipo}", "value": r.cod_tienda} for r in tiendas.itertuples()]
-    return opts, (tiendas["cod_tienda"].iloc[0] if len(tiendas) else None)
+    opts = [{"label": f"{r.cod_tienda} — {r.nombre or r.tipo}", "value": r.cod_tienda} for r in tiendas.itertuples()]
+    # SANRO primero si existe, porque es la tienda que ya tiene plano completo cargado.
+    default = "SANRO" if "SANRO" in tiendas["cod_tienda"].tolist() else (tiendas["cod_tienda"].iloc[0] if len(tiendas) else None)
+    return opts, default
 
 
-# ================= Sidebar: período =================
 @app.callback(
     Output("f-mes", "options"), Output("f-mes", "value"), Output("f-mes", "style"),
     Output("f-semana", "options"), Output("f-semana", "value"), Output("f-semana", "style"),
@@ -274,10 +403,12 @@ def _periodo_opts(tienda, modo):
     if not tienda:
         return [], None, {"display": "none"}, [], None, {"display": "none"}
     meses, semanas = db.get_periodos(tienda)
+    if meses.empty:
+        return [], None, {"display": "none"}, [], None, {"display": "none"}
     anio = int(meses["anio"].max())
-    meses_disp = meses[meses["anio"] == anio]["mes"].tolist()
-    semanas_disp = semanas[semanas["anio"] == anio]["semana"].tolist()
-    mes_opts = [{"label": f"Mes {m}", "value": m} for m in meses_disp]
+    meses_disp = meses[meses["anio"] == anio]["mes"].astype(int).tolist()
+    semanas_disp = semanas[semanas["anio"] == anio]["semana"].astype(int).tolist()
+    mes_opts = [{"label": MONTHS.get(m, f"Mes {m}"), "value": m} for m in meses_disp]
     sem_opts = [{"label": f"Semana {s}", "value": s} for s in semanas_disp]
     mostrar_mes = {"display": "block"} if modo == "Mes" else {"display": "none"}
     mostrar_sem = {"display": "block"} if modo == "Semana" else {"display": "none"}
@@ -285,7 +416,6 @@ def _periodo_opts(tienda, modo):
         sem_opts, (semanas_disp[-1] if semanas_disp else None), mostrar_sem
 
 
-# ================= Sidebar: opciones de filtro =================
 @app.callback(
     Output("f-familia", "options"), Output("f-categoria", "options"), Output("f-clasificacion", "options"),
     Output("f-zona_pck", "options"), Output("f-responsable_linea", "options"), Output("f-marca", "options"),
@@ -299,248 +429,476 @@ def _filtro_opts(tienda):
             op["responsable_linea"], op["marca"])
 
 
-# ================= Selección en el mapa (clic) =================
+# =========================
+# Selección: mapa o cola de acciones
+# =========================
 @app.callback(
     Output("store-seleccion", "data"),
-    Input("mapa-calor", "clickData"), Input("f-nivel-mapa", "value"),
+    Input("mapa-calor", "clickData"),
+    Input("tabla-acciones-rack", "active_cell"),
+    Input("btn-clear-selection", "n_clicks"),
     Input("f-tienda", "value"), Input("f-mes", "value"), Input("f-semana", "value"),
-    State("store-seleccion", "data"),
+    Input("f-nivel-mapa", "value"), Input("f-familia", "value"), Input("f-categoria", "value"),
+    Input("f-clasificacion", "value"), Input("f-zona_pck", "value"),
+    Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
+    State("tabla-acciones-rack", "data"), State("store-seleccion", "data"),
     prevent_initial_call=True,
 )
-def _click_mapa(clickData, nivel, tienda, mes, semana, actual):
+def _seleccionar(click_mapa, action_cell, clear_clicks, tienda, mes, semana, nivel,
+                  familia, categoria, clasificacion, zona_pck, responsable, marca, maneja,
+                  action_data, actual):
     trig = callback_context.triggered_id
-    if trig in ("f-tienda", "f-mes", "f-semana", "f-nivel-mapa"):
-        return None  # cambiar tienda/periodo/nivel limpia la selección
-    if clickData:
-        clave = clickData["points"][0].get("customdata")
+    reset_ids = {"f-tienda", "f-mes", "f-semana", "f-nivel-mapa", "f-familia", "f-categoria",
+                 "f-clasificacion", "f-zona_pck", "f-responsable_linea", "f-marca", "f-maneja_stock"}
+    if trig in reset_ids or trig == "btn-clear-selection":
+        return None
+    if trig == "tabla-acciones-rack" and action_cell and action_data:
+        rack = action_cell.get("row_id")
+        if rack:
+            return {"nivel": "rack", "clave": rack}
+        idx = action_cell.get("row")
+        if idx is not None and 0 <= idx < len(action_data):
+            rack = action_data[idx].get("rack")
+            if rack:
+                return {"nivel": "rack", "clave": rack}
+    if trig == "mapa-calor" and click_mapa:
+        clave = click_mapa["points"][0].get("customdata")
         if clave:
             nivel_key = "pasillo" if nivel == "Pasillo" else "rack"
             if actual and actual.get("nivel") == nivel_key and actual.get("clave") == clave:
-                return None  # clic de nuevo sobre el mismo punto = deseleccionar
+                return None
             return {"nivel": nivel_key, "clave": clave}
     return actual
 
 
-@app.callback(Output("seleccion-mapa-info", "children"), Input("store-seleccion", "data"))
-def _seleccion_info(sel):
-    if not sel:
-        return html.Div("Sin sección filtrada desde el mapa.", className="side-foot")
-    return html.Div([
-        html.Div(f"Filtrando por {sel['nivel']}: {sel['clave']}", className="side-selection-active"),
-    ])
-
-
-# ================= Callback principal: arma todos los datos del dashboard =================
+# =========================
+# Centro de acciones YTD
+# =========================
 @app.callback(
-    Output("header-tienda", "children"),
-    Output("kpi-row", "children"),
-    Output("margen-warning", "children"),
-    Output("mapa-calor", "figure"),
+    Output("action-summary", "children"),
+    Output("tabla-acciones-rack", "data"), Output("tabla-acciones-rack", "columns"),
+    Input("f-tienda", "value"), Input("f-familia", "value"), Input("f-categoria", "value"),
+    Input("f-clasificacion", "value"), Input("f-zona_pck", "value"),
+    Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
+)
+def _acciones_rack(tienda, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
+    if not tienda:
+        return None, [], []
+    anio = db.get_anio_actual(tienda)
+    filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    df = db.get_acciones_rack(tienda, anio, filtros=filtros)
+    if df.empty:
+        return html.Div("No hay datos para construir recomendaciones."), [], []
+
+    accionables = df[df["accion"] != "Mantener"].copy()
+    alta = int((df["prioridad"] == "Alta").sum())
+    proteger = int((df["accion"] == "Proteger venta").sum())
+    revisar = int((df["accion"] == "Revisar rack").sum())
+    potenciar = int((df["accion"] == "Potenciar rack").sum())
+    optimizar = int((df["accion"] == "Optimizar surtido").sum())
+
+    top = accionables.iloc[0] if len(accionables) else df.iloc[0]
+    filtros_activos = sum(len(v) for v in filtros.values()) > 0
+    comparacion_note = ("Con filtros de producto, el motor no mezcla el histórico YoY porque 2025 no está desagregado por SKU."
+                        if filtros_activos else "La tendencia compara contra el año anterior al mismo corte disponible.")
+
+    summary = html.Div([
+        html.Div([
+            html.Div([html.Span(top["prioridad"], className=f"priority-pill priority-{top['prioridad'].lower()}"),
+                      html.Span(f"Rack {top['rack']} · Pasillo {top['pasillo']}", className="action-location")],
+                     className="action-hero-top"),
+            html.H3(top["accion"], className="action-hero-title"),
+            html.P(top["motivo"], className="action-hero-text"),
+            html.P(top["recomendacion"], className="action-hero-reco"),
+        ], className="action-hero"),
+        html.Div([
+            html.Div([html.Strong(alta), html.Span("prioridad alta")], className="mini-stat"),
+            html.Div([html.Strong(proteger), html.Span("proteger")], className="mini-stat"),
+            html.Div([html.Strong(revisar), html.Span("revisar")], className="mini-stat"),
+            html.Div([html.Strong(potenciar), html.Span("potenciar")], className="mini-stat"),
+            html.Div([html.Strong(optimizar), html.Span("optimizar")], className="mini-stat"),
+        ], className="mini-stat-grid"),
+        html.Div(comparacion_note, className="engine-note"),
+    ], className="action-summary")
+
+    view = accionables[["prioridad", "accion", "pasillo", "rack", "venta", "variacion_pct",
+                        "skus", "venta_por_sku", "motivo"]].head(250).copy()
+    view["id"] = view["rack"].astype(str)
+    cols = [
+        {"name": "Prioridad", "id": "prioridad"},
+        {"name": "Acción", "id": "accion"},
+        {"name": "Pasillo", "id": "pasillo"},
+        {"name": "Rack", "id": "rack"},
+        {"name": "Venta YTD", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Var. AA", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Por qué", "id": "motivo"},
+    ]
+    return summary, clean_records(view), cols
+
+
+# =========================
+# Dashboard principal
+# =========================
+@app.callback(
+    Output("header-tienda", "children"), Output("margen-status", "children"), Output("kpi-row", "children"),
+    Output("mapa-calor", "figure"), Output("coord-status", "children"), Output("tendencia-semanal", "figure"),
     Output("tabla-pasillos", "data"), Output("tabla-pasillos", "columns"),
     Output("tabla-racks", "data"), Output("tabla-racks", "columns"),
-    Output("recom-resumen", "children"),
-    Output("tabla-recomendacion", "data"), Output("tabla-recomendacion", "columns"),
-    Output("treemap-familia", "figure"),
-    Output("sin-coordenadas-panel", "children"),
     Output("tabla-top", "data"), Output("tabla-top", "columns"),
     Output("tabla-baja", "data"), Output("tabla-baja", "columns"),
-    Output("acciones-resumen", "children"),
-    Output("tabla-sinventa", "data"), Output("tabla-sinventa", "columns"),
+    Output("treemap-familia", "figure"),
+    Output("oportunidades-resumen", "children"), Output("tabla-sinventa", "data"), Output("tabla-sinventa", "columns"),
     Output("comparativo-cards", "children"),
-    Input("f-tienda", "value"), Input("f-modo-periodo", "value"),
-    Input("f-mes", "value"), Input("f-semana", "value"),
+    Input("f-tienda", "value"), Input("f-modo-periodo", "value"), Input("f-mes", "value"), Input("f-semana", "value"),
     Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
     Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
-    Input("f-maneja_stock", "value"), Input("f-nivel-mapa", "value"),
-    Input("store-seleccion", "data"),
+    Input("f-maneja_stock", "value"), Input("f-nivel-mapa", "value"), Input("store-seleccion", "data"),
 )
 def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck,
                  responsable_linea, marca, maneja_sel, nivel_mapa_lbl, seleccion):
     if not tienda:
-        return [dash.no_update] * 21
+        return [dash.no_update] * 19
 
+    anio = db.get_anio_actual(tienda)
+    if anio is None:
+        return [dash.no_update] * 19
     mes_sel = mes if modo == "Mes" else None
     semana_sel = semana if modo == "Semana" else None
-    filtros = {
-        "familia": familia or [], "categoria": categoria or [], "clasificacion": clasificacion or [],
-        "zona_pck": zona_pck or [], "responsable_linea": responsable_linea or [], "marca": marca or [],
-        "maneja_stock": ["S"] if maneja_sel == "Sí" else ["N"] if maneja_sel == "No" else [],
-    }
+    filtros = make_filters(maneja_sel, familia, categoria, clasificacion, zona_pck, responsable_linea, marca)
     nivel_mapa = "pasillo" if nivel_mapa_lbl == "Pasillo" else "rack"
 
-    tiendas = db.get_tiendas()
-    tipo_tienda = tiendas.set_index("cod_tienda").loc[tienda, "tipo"]
-    anio = 2026  # dataset actual -- si se agregan años futuros, calcular como max(meses.anio)
+    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
 
-    pasillo_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "rack" else None
-
+    resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                     pasillo=pasillo_f, rack=rack_f)
     pasillos = db.get_pasillo_resumen(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                       pasillo=pasillo_f, rack=rack_f)
+                                      pasillo=pasillo_f, rack=rack_f)
     racks = db.get_rack_detalle(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                 pasillo=pasillo_f, rack=rack_f)
-
+                                pasillo=pasillo_f, rack=rack_f)
     top = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                pasillo=pasillo_f, rack=rack_f, n=50)
+                               pasillo=pasillo_f, rack=rack_f, n=50)
     baja = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                 pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
-    sin_venta = db.get_sin_venta(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros, n=300)
-    acciones = db.get_acciones_producto(tienda, anio, filtros=filtros, n=300)
-
-    periodo_txt = f"Semana {semana_sel}" if semana_sel else (f"Mes {mes_sel}/{anio}" if mes_sel else f"Año {anio}")
-    n_filtros = sum(len(v) for v in filtros.values())
-
-    header = html.Div([
-        html.H1(tienda),
-        html.Div([
-            html.Span(tipo_tienda, className="badge-good"),
-            html.Span(periodo_txt, className="header-periodo"),
-            html.Span(f"{n_filtros} filtro(s) activo(s)", className="header-periodo") if n_filtros else None,
-        ]),
-    ])
-
-    kpis = dbc.Row([
-        dbc.Col(_kpi(FMT(pasillos["venta"].sum()) if len(pasillos) else "$0", "Venta del período"), md=3),
-        dbc.Col(_kpi(str(int(pasillos["pasillo"].nunique())) if len(pasillos) else "0", "Pasillos con venta"), md=3),
-        dbc.Col(_kpi(str(int(racks["rack"].nunique())) if len(racks) else "0", "Racks con venta"), md=3),
-        dbc.Col(_kpi(str(len(acciones)), "SKU con stock sin venta"), md=3),
-    ], className="g-3")
-
-    margen_warn = None
-    if len(pasillos) and pasillos["margen"].sum() == 0:
-        margen_warn = dbc.Alert(
-            "⚠️ Margen en $0 — bug conocido en el JOIN de costos del origen de datos. La venta sí es real.",
-            color="warning", className="margen-alert")
-
-    fig_mapa = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa)
-
-    cols_pasillo = [{"name": n, "id": c} for n, c in
-                     [("Pasillo", "pasillo"), ("Racks", "racks"), ("Venta", "venta"), ("Margen", "margen")]]
-    cols_rack = [{"name": n, "id": c} for n, c in
-                 [("Pasillo", "pasillo"), ("Rack", "rack"), ("Venta", "venta"), ("Margen", "margen")]]
-
-    recom = db.get_recomendacion_pasillo(tienda, pasillo=pasillo_f, rack=rack_f)
-    if recom.empty:
-        recom_resumen = html.Div("Sin datos suficientes para comparar años todavía.", className="section-subtitle")
-        recom_data, recom_cols = [], []
-    else:
-        counts = recom["recomendacion"].value_counts()
-        badge_class = {"Aumentar espacio": "badge-good", "Mantener": "badge-neutral",
-                        "Revisar": "badge-neutral", "Reducir espacio": "badge-bad"}
-        recom_resumen = html.Div([
-            html.Span(f"{k}: {v}", className=badge_class.get(k, "badge-neutral")) for k, v in counts.items()
-        ], className="recom-badges")
-        recom_data = recom.round(1).to_dict("records")
-        recom_cols = [{"name": n, "id": c} for n, c in
-                      [("Pasillo", "pasillo"), ("Rack", "rack"), ("Venta", "venta"),
-                       ("Venta año anterior", "venta_anio_anterior"), ("Variación %", "variacion_pct"),
-                       ("Recomendación", "recomendacion")]]
-
+                                pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
     tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                           pasillo=pasillo_f, rack=rack_f)
-    fig_tree = _figura_treemap(tree)
+                          pasillo=pasillo_f, rack=rack_f)
+    sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros)
+    acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250)
 
-    sin_coord = db.get_sin_coordenadas(tienda, nivel=nivel_mapa)
-    sin_coord_panel = None
-    if not sin_coord.empty:
-        sin_coord_panel = section(
-            f"{nivel_mapa.capitalize()}s con venta pero sin coordenada en el plano",
-            [dash_table.DataTable(
-                data=sin_coord.round(0).to_dict("records"),
-                columns=[{"name": nivel_mapa.capitalize(), "id": "clave"}, {"name": "Venta", "id": "venta"}],
-                **TABLE_STYLE)],
-            subtitle="No aparecen en el mapa de calor porque el plano no tiene su posición cargada todavía.")
-
-    def _cols_prod(extra=()):
-        base = [("SKU", "cod_rapido"), ("Producto", "descripcion"), ("Marca", "marca"),
-                ("Maneja stock", "maneja_stock"), ("Stock", "stock")]
-        return [{"name": n, "id": c} for n, c in base + list(extra)]
-
-    top_cols = _cols_prod([("Venta", "venta"), ("Cantidad", "cantidad")])
-    baja_cols = _cols_prod([("Venta", "venta"), ("Cantidad", "cantidad")])
-    sinventa_cols = [{"name": n, "id": c} for n, c in
-                      [("SKU", "cod_rapido"), ("Producto", "descripcion"), ("Marca", "marca"),
-                       ("Stock", "stock"), ("Acción sugerida", "accion")]]
-
-    if acciones.empty:
-        acciones_resumen = html.Div("Sin productos en esta situación con los filtros actuales.",
-                                     className="section-subtitle")
+    tiendas = db.get_tiendas()
+    row_store = tiendas[tiendas["cod_tienda"] == tienda]
+    nombre = row_store.iloc[0]["nombre"] if len(row_store) and pd.notna(row_store.iloc[0]["nombre"]) else tienda
+    tipo = row_store.iloc[0]["tipo"] if len(row_store) else ""
+    if semana_sel:
+        periodo_txt = f"Semana {semana_sel} · {anio}"
+    elif mes_sel:
+        periodo_txt = f"{MONTHS.get(int(mes_sel), f'Mes {mes_sel}')} · {anio}"
     else:
-        badge_class = {"Revisar": "badge-bad", "Mejorar visibilidad": "badge-neutral",
-                        "Candidato a liquidar": "badge-bad"}
-        counts = acciones["accion"].apply(lambda a: next((k for k in badge_class if a.startswith(k)), a)) \
-            .value_counts()
-        acciones_resumen = html.Div([
-            html.Span(f"{k}: {v}", className=badge_class.get(k, "badge-neutral")) for k, v in counts.items()
-        ], className="recom-badges")
+        periodo_txt = f"Año {anio}"
 
-    comp = db.get_comparativo_anio(tienda)
-    comp_cards = _comparativo_cards(comp)
+    selection_txt = None
+    if rack_f:
+        selection_txt = f"Analizando rack {rack_f}"
+    elif pasillo_f:
+        selection_txt = f"Analizando pasillo {pasillo_f}"
+
+    sync = db.get_sync_status()
+    sync_txt = "Datos cargados desde Postgres"
+    if sync and sync.get("ejecutado_en") is not None:
+        ts = pd.to_datetime(sync["ejecutado_en"], errors="coerce")
+        if pd.notna(ts):
+            sync_txt = f"Última sincronización: {ts.strftime('%d/%m/%Y %H:%M')}"
+
+    n_filtros = sum(len(v) for v in filtros.values())
+    header = html.Div([
+        html.Div([
+            html.Div("ANÁLISIS DE ESPACIO", className="page-eyebrow"),
+            html.H1(f"{tienda} · {nombre}", className="page-title"),
+            html.Div([
+                html.Span(tipo, className="context-chip") if tipo else None,
+                html.Span(periodo_txt, className="context-chip"),
+                html.Span(f"{n_filtros} filtros activos", className="context-chip") if n_filtros else None,
+                html.Span(selection_txt, className="context-chip context-selected") if selection_txt else None,
+            ], className="context-row"),
+        ]),
+        html.Div(sync_txt, className="sync-text"),
+    ], className="page-header")
+
+    if float(resumen.get("margen") or 0) == 0:
+        margen_status = html.Div([
+            html.Span("Modo desempeño", className="mode-pill"),
+            html.Span("Margen pendiente: las recomendaciones actuales usan venta, tendencia y surtido; no se presenta falsa rentabilidad."),
+        ], className="mode-banner")
+    else:
+        margen_status = html.Div([
+            html.Span("Rentabilidad activa", className="mode-pill mode-pill-good"),
+            html.Span("La base ya contiene margen y puede incorporarse al motor de decisión."),
+        ], className="mode-banner")
+
+    var = resumen.get("variacion_pct")
+    var_tone = "good" if var is not None and var >= 0 else "bad" if var is not None else "muted"
+    prev_helper = (f"vs {resumen.get('periodo_anterior')}: {fmt_money_short(resumen.get('venta_anterior'))}"
+                   if resumen.get("periodo_anterior") else "Sin período comparable con este nivel de filtro")
+    kpis = [
+        metric_card("Venta del período", fmt_money_short(resumen.get("venta")),
+                    "Respeta todos los filtros y la selección del mapa"),
+        metric_card("Variación", fmt_pct(var), prev_helper, var_tone),
+        metric_card("Racks con venta", f"{int(resumen.get('racks') or 0):,}".replace(",", "."),
+                    f"{int(resumen.get('skus') or 0):,} SKU con venta".replace(",", ".")),
+        metric_card("Stock sin venta YTD", f"{sinventa_count:,}".replace(",", "."),
+                    "SKU con stock positivo y sin venta en el año", "bad" if sinventa_count else "good"),
+    ]
+
+    fig_map = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion)
+    sin_coord = db.get_sin_coordenadas(tienda, nivel=nivel_mapa)
+    if len(sin_coord):
+        coord_status = html.Span(f"{len(sin_coord)} sin coordenada", className="coord-warning")
+    else:
+        coord_status = html.Span("Plano completo", className="coord-ok")
+
+    tendencia = db.get_tendencia_semana(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+    fig_trend = _figura_tendencia(tendencia, semana_sel)
+
+    if len(pasillos):
+        pasillos = pasillos.copy()
+        pasillos["venta_por_rack"] = pasillos["venta"] / pasillos["racks"].replace(0, pd.NA)
+    if len(racks):
+        racks = racks.copy()
+        racks["venta_por_sku"] = racks["venta"] / racks["skus"].replace(0, pd.NA)
+
+    cols_pasillo = [
+        {"name": "Pasillo", "id": "pasillo"},
+        {"name": "Racks", "id": "racks", "type": "numeric", "format": NUM_FMT},
+        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Venta / rack", "id": "venta_por_rack", "type": "numeric", "format": MONEY_FMT},
+    ]
+    cols_rack = [
+        {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
+        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Unidades", "id": "unidades", "type": "numeric", "format": NUM_FMT},
+    ]
+    prod_cols = [
+        {"name": "SKU", "id": "cod_rapido"}, {"name": "Producto", "id": "descripcion"},
+        {"name": "Marca", "id": "marca"}, {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Cantidad", "id": "cantidad", "type": "numeric", "format": NUM_FMT},
+    ]
+
+    if acciones_prod.empty:
+        opp_summary = html.Div("No hay SKU con stock y sin venta para los filtros actuales.", className="empty-note")
+    else:
+        counts = acciones_prod["prioridad"].value_counts()
+        opp_summary = html.Div([
+            html.Div([html.Strong(int(counts.get("Alta", 0))), html.Span("prioridad alta")], className="mini-stat"),
+            html.Div([html.Strong(int(counts.get("Media", 0))), html.Span("prioridad media")], className="mini-stat"),
+            html.Div([html.Strong(sinventa_count), html.Span("total sin venta")], className="mini-stat"),
+        ], className="mini-stat-grid opportunity-stats")
+
+    sinventa_cols = [
+        {"name": "Prioridad", "id": "prioridad"}, {"name": "SKU", "id": "cod_rapido"},
+        {"name": "Producto", "id": "descripcion"}, {"name": "Marca", "id": "marca"},
+        {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta AA", "id": "venta_anio_anterior", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Acción", "id": "accion"}, {"name": "Por qué", "id": "motivo"},
+    ]
+
+    comp_cards = _comparativo_cards(db.get_comparativo_anio(tienda))
 
     return (
-        header, kpis, margen_warn, fig_mapa,
-        pasillos.round(0).to_dict("records"), cols_pasillo,
-        racks.round(0).to_dict("records"), cols_rack,
-        recom_resumen, recom_data, recom_cols,
-        fig_tree, sin_coord_panel,
-        top.round(0).to_dict("records"), top_cols,
-        baja.round(0).to_dict("records"), baja_cols,
-        acciones_resumen,
-        acciones.round(0).to_dict("records"), sinventa_cols,
+        header, margen_status, kpis,
+        fig_map, coord_status, fig_trend,
+        clean_records(pasillos), cols_pasillo,
+        clean_records(racks), cols_rack,
+        clean_records(top), prod_cols,
+        clean_records(baja), prod_cols,
+        _figura_treemap(tree),
+        opp_summary, clean_records(acciones_prod), sinventa_cols,
         comp_cards,
     )
 
 
-def _kpi(value, label):
-    return dbc.Card(dbc.CardBody([html.Div(value, className="kpi-value"),
-                                   html.Div(label, className="kpi-label")]), className="kpi-card")
+# =========================
+# Diagnóstico de selección
+# =========================
+@app.callback(
+    Output("selection-panel", "children"),
+    Input("store-seleccion", "data"), Input("f-tienda", "value"), Input("f-modo-periodo", "value"),
+    Input("f-mes", "value"), Input("f-semana", "value"),
+    Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
+    Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
+    Input("f-maneja_stock", "value"),
+)
+def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, clasificacion,
+                     zona_pck, responsable, marca, maneja):
+    if not tienda:
+        return None
+    anio = db.get_anio_actual(tienda)
+    filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    if not seleccion:
+        acciones = db.get_acciones_rack(tienda, anio, filtros=filtros)
+        accionables = acciones[acciones["accion"] != "Mantener"] if not acciones.empty else acciones
+        if len(accionables):
+            top = accionables.iloc[0]
+            return html.Div([
+                html.Div("Sin sección seleccionada", className="diagnostic-kicker"),
+                html.H3("Empieza por la primera acción", className="diagnostic-title"),
+                html.P(f"Rack {top['rack']}: {top['accion']}. {top['motivo']}", className="diagnostic-text"),
+                html.Div("Puedes hacer clic en ese rack en la tabla de acciones o directamente sobre el plano.", className="diagnostic-hint"),
+            ])
+        return html.Div([
+            html.Div("Sin sección seleccionada", className="diagnostic-kicker"),
+            html.H3("Explora un rack", className="diagnostic-title"),
+            html.P("Haz clic en el mapa para ver KPIs, tendencia y una recomendación explicada.", className="diagnostic-text"),
+        ])
+
+    mes_sel = mes if modo == "Mes" else None
+    semana_sel = semana if modo == "Semana" else None
+    pasillo_f = seleccion["clave"] if seleccion.get("nivel") == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion.get("nivel") == "rack" else None
+    resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                     pasillo=pasillo_f, rack=rack_f)
+
+    title = f"Rack {rack_f}" if rack_f else f"Pasillo {pasillo_f}"
+    metrics = html.Div([
+        html.Div([html.Span("Venta"), html.Strong(fmt_money_short(resumen.get("venta")))]),
+        html.Div([html.Span("Variación"), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
+        html.Div([html.Span("SKUs"), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
+        html.Div([html.Span("Unidades"), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
+    ], className="diagnostic-metrics")
+
+    acciones = db.get_acciones_rack(tienda, anio, filtros=filtros)
+    if rack_f and not acciones.empty:
+        match = acciones[acciones["rack"] == rack_f]
+        if len(match):
+            r = match.iloc[0]
+            action_box = html.Div([
+                html.Div([html.Span(r["prioridad"], className=f"priority-pill priority-{r['prioridad'].lower()}"),
+                          html.Span("Recomendación YTD", className="diagnostic-kicker")], className="action-hero-top"),
+                html.H4(r["accion"], className="diagnostic-action"),
+                html.P(r["motivo"], className="diagnostic-text"),
+                html.P(r["recomendacion"], className="diagnostic-recommendation"),
+            ], className="diagnostic-action-box")
+        else:
+            action_box = html.Div("No hay una recomendación específica para este rack con los filtros actuales.", className="empty-note")
+    elif pasillo_f and not acciones.empty:
+        sub = acciones[(acciones["pasillo"] == pasillo_f) & (acciones["accion"] != "Mantener")]
+        counts = sub["accion"].value_counts() if len(sub) else pd.Series(dtype=int)
+        action_box = html.Div([
+            html.Div("Acciones dentro del pasillo", className="diagnostic-kicker"),
+            html.P(", ".join(f"{k}: {v}" for k, v in counts.items()) if len(counts) else "Sin acciones urgentes en este pasillo.",
+                   className="diagnostic-text"),
+        ], className="diagnostic-action-box")
+    else:
+        action_box = None
+
+    return html.Div([
+        html.Div("Sección seleccionada", className="diagnostic-kicker"),
+        html.H3(title, className="diagnostic-title"),
+        metrics,
+        action_box,
+    ])
 
 
-def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa):
+# =========================
+# Figuras
+# =========================
+def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion):
     plano = db.get_plano(tienda)
     coords = db.get_coords(tienda, nivel=nivel_mapa)
     fig = go.Figure()
     if plano is None or coords.empty:
-        fig.add_annotation(text=f"Todavía no hay coordenadas de {nivel_mapa} para {tienda}. "
-                                 "Súbelas en la página Administrar Planos.",
-                            showarrow=False, font=dict(size=14, color="#5B6B79"))
+        fig.add_annotation(
+            text=f"Todavía no hay plano/coordenadas de {nivel_mapa} para {tienda}. Súbelas en Administrar Planos.",
+            showarrow=False, font=dict(size=14, color="#64748B"), x=0.5, y=0.5,
+        )
         fig.update_xaxes(visible=False)
         fig.update_yaxes(visible=False)
-        fig.update_layout(height=500, plot_bgcolor="#F7F8F7")
+        fig.update_layout(height=520, plot_bgcolor="#F8FAFC", paper_bgcolor="rgba(0,0,0,0)", margin=dict(l=0, r=0, t=5, b=0))
         return fig
 
     venta_nivel = db.get_venta_por_nivel(tienda, anio, mes=mes_sel, semana=semana_sel,
-                                          filtros=filtros, nivel=nivel_mapa)
-    venta_map = venta_nivel.set_index("clave")["venta"].to_dict()
+                                         filtros=filtros, nivel=nivel_mapa)
+    venta_map = venta_nivel.set_index("clave")["venta"].to_dict() if len(venta_nivel) else {}
     coords = coords.copy()
-    coords["venta"] = coords["clave"].map(venta_map).fillna(0)
-    max_v = max(coords["venta"].max(), 1)
+    coords["venta"] = pd.to_numeric(coords["clave"].map(venta_map), errors="coerce").fillna(0.0)
+    max_v = max(float(coords["venta"].max()), 1.0)
     positivos = coords.loc[coords["venta"] > 0, "venta"]
-    tope_color = max(positivos.quantile(0.90), 1) if len(positivos) else 1
+    tope_color = max(float(positivos.quantile(0.90)), 1.0) if len(positivos) else 1.0
 
     img_b64 = base64.b64encode(plano["imagen"]).decode("ascii")
-    fig.add_layout_image(dict(source=f"data:image/png;base64,{img_b64}", xref="x", yref="y",
-                               x=0, y=0, sizex=plano["img_w"], sizey=plano["img_h"],
-                               sizing="stretch", layer="below"))
+    fig.add_layout_image(dict(
+        source=f"data:image/png;base64,{img_b64}", xref="x", yref="y", x=0, y=0,
+        sizex=plano["img_w"], sizey=plano["img_h"], sizing="stretch", layer="below",
+    ))
+    sizes = 9 + 23 * (coords["venta"] / max_v).pow(0.5)
     fig.add_trace(go.Scatter(
         x=coords["x"], y=coords["y"], mode="markers", customdata=coords["clave"],
-        marker=dict(size=8 + 30 * (coords["venta"] / max_v) ** 0.5, color=coords["venta"],
-                    colorscale="Turbo", cmin=0, cmax=tope_color, showscale=True,
-                    colorbar=dict(title="Venta", tickprefix="$"), line=dict(width=1, color="white")),
-        text=[f"{nivel_mapa.capitalize()} {c}<br>{FMT(v)}" for c, v in zip(coords["clave"], coords["venta"])],
+        marker=dict(size=sizes, color=coords["venta"], colorscale="Blues", cmin=0, cmax=tope_color,
+                    showscale=True, colorbar=dict(title="Venta", tickprefix="$", thickness=12, len=.55),
+                    line=dict(width=1.2, color="white"), opacity=.93),
+        text=[f"{nivel_mapa.capitalize()} {c}<br><b>{fmt_money(v)}</b>" for c, v in zip(coords["clave"], coords["venta"])],
         hoverinfo="text",
     ))
-    fig.update_xaxes(visible=False, range=[0, plano["img_w"]])
-    fig.update_yaxes(visible=False, range=[plano["img_h"], 0])
-    fig.update_layout(height=550, margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor="white",
-                       clickmode="event+select")
+
+    if seleccion:
+        sel_key = seleccion.get("clave")
+        if seleccion.get("nivel") == "rack" and nivel_mapa == "pasillo" and sel_key:
+            sel_key = str(sel_key)[:3]
+        match = coords[coords["clave"].astype(str) == str(sel_key)] if sel_key else pd.DataFrame()
+        if len(match):
+            r = match.iloc[0]
+            fig.add_trace(go.Scatter(
+                x=[r["x"]], y=[r["y"]], mode="markers", hoverinfo="skip", showlegend=False,
+                marker=dict(size=30, color="rgba(255,255,255,.10)", line=dict(width=4, color="#F59E0B")),
+            ))
+
+    fig.update_xaxes(visible=False, range=[0, plano["img_w"]], fixedrange=True)
+    fig.update_yaxes(visible=False, range=[plano["img_h"], 0], fixedrange=True)
+    fig.update_layout(
+        height=560, margin=dict(l=0, r=0, t=5, b=0), plot_bgcolor="white",
+        paper_bgcolor="rgba(0,0,0,0)", clickmode="event+select", showlegend=False,
+    )
+    return fig
+
+
+def _figura_tendencia(df, semana_sel=None):
+    fig = go.Figure()
+    if df is None or df.empty:
+        fig.add_annotation(text="Sin tendencia disponible", showarrow=False, font=dict(color="#64748B"))
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        fig.update_layout(height=220, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
+        return fig
+    df = df.copy()
+    df["venta"] = pd.to_numeric(df["venta"], errors="coerce").fillna(0)
+    fig.add_trace(go.Scatter(
+        x=df["semana"], y=df["venta"], mode="lines+markers",
+        line=dict(color="#2563EB", width=2.5), marker=dict(size=5, color="#2563EB"),
+        fill="tozeroy", fillcolor="rgba(37,99,235,.08)",
+        hovertemplate="Semana %{x}<br><b>$%{y:,.0f}</b><extra></extra>",
+    ))
+    if semana_sel:
+        fig.add_vline(x=semana_sel, line_width=1.5, line_dash="dot", line_color="#F59E0B")
+    fig.update_layout(
+        height=220, margin=dict(l=4, r=4, t=8, b=26), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="white",
+        hovermode="x unified",
+    )
+    fig.update_xaxes(title=None, showgrid=False, tickfont=dict(size=10, color="#64748B"))
+    fig.update_yaxes(title=None, showgrid=True, gridcolor="#EEF2F7", zeroline=False,
+                     tickfont=dict(size=10, color="#64748B"), tickprefix="$", tickformat="~s")
     return fig
 
 
 def _figura_treemap(tree):
     fig = go.Figure()
-    if tree.empty:
-        fig.update_layout(height=480, plot_bgcolor="#F7F8F7")
+    if tree is None or tree.empty:
+        fig.add_annotation(text="Sin datos para esta selección", showarrow=False, font=dict(color="#64748B"))
+        fig.update_layout(height=470, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
         return fig
     familias = tree.groupby("familia", as_index=False)["venta"].sum()
     jefes = tree.groupby(["familia", "jefe_linea"], as_index=False)["venta"].sum()
@@ -551,58 +909,65 @@ def _figura_treemap(tree):
     parents = ([""] * len(familias) + list(jefes["familia"]) +
                [f"{r.familia}|{r.jefe_linea}" for r in tree.itertuples()])
     values = list(familias["venta"]) + list(jefes["venta"]) + list(tree["venta"])
-    fig.add_trace(go.Treemap(ids=ids, labels=labels, parents=parents, values=values, branchvalues="total",
-                              marker=dict(colors=values, colorscale="Turbo", line=dict(width=1, color="white")),
-                              texttemplate="%{label}<br>$%{value:,.0f}"))
-    fig.update_layout(height=480, margin=dict(l=0, r=0, t=10, b=0))
+    fig.add_trace(go.Treemap(
+        ids=ids, labels=labels, parents=parents, values=values, branchvalues="total",
+        marker=dict(colors=values, colorscale="Blues", line=dict(width=1, color="white")),
+        texttemplate="%{label}<br>$%{value:,.0f}", hovertemplate="%{label}<br><b>$%{value:,.0f}</b><extra></extra>",
+    ))
+    fig.update_layout(height=500, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
 
+# =========================
+# Comparativo anual
+# =========================
 def _comparativo_cards(comp):
     if comp is None or len(comp) < 2:
-        return html.Div("Sin datos suficientes para comparar años.", className="section-subtitle")
+        return html.Div("Sin datos suficientes para comparar años.", className="empty-note")
+    comp = comp.sort_values("anio")
     a_actual, a_ant = comp.iloc[-1], comp.iloc[-2]
 
     def _var(actual, anterior):
-        if not anterior:
+        if anterior is None or pd.isna(anterior) or float(anterior) == 0:
             return None
-        return (actual - anterior) / anterior * 100
+        return (float(actual) - float(anterior)) / float(anterior) * 100
 
     filas = [
-        ("Venta", FMT(a_actual.venta), FMT(a_ant.venta), _var(a_actual.venta, a_ant.venta)),
-        ("Transacciones", f"{int(a_actual.trx):,}".replace(",", "."), f"{int(a_ant.trx):,}".replace(",", "."),
-         _var(a_actual.trx, a_ant.trx)),
-        ("Ticket promedio", FMT(a_actual.ticket_promedio), FMT(a_ant.ticket_promedio),
-         _var(a_actual.ticket_promedio, a_ant.ticket_promedio)),
-        ("Clientes únicos", f"{int(a_actual.clientes):,}".replace(",", "."),
-         f"{int(a_ant.clientes):,}".replace(",", "."), _var(a_actual.clientes, a_ant.clientes)),
+        ("Venta", fmt_money_short(a_actual.venta), _var(a_actual.venta, a_ant.venta), fmt_money_short(a_ant.venta)),
+        ("Transacciones", f"{int(a_actual.trx):,}".replace(",", "."), _var(a_actual.trx, a_ant.trx),
+         f"{int(a_ant.trx):,}".replace(",", ".")),
+        ("Ticket promedio", fmt_money(a_actual.ticket_promedio), _var(a_actual.ticket_promedio, a_ant.ticket_promedio),
+         fmt_money(a_ant.ticket_promedio)),
+        ("Clientes únicos", f"{int(a_actual.clientes):,}".replace(",", "."), _var(a_actual.clientes, a_ant.clientes),
+         f"{int(a_ant.clientes):,}".replace(",", ".")),
     ]
-    cards = []
-    for nombre, val, val_ant, var in filas:
-        color = "#1E8A5B" if (var or 0) >= 0 else "#C4432B"
-        flecha = "▲" if (var or 0) >= 0 else "▼"
-        cards.append(dbc.Col(dbc.Card(dbc.CardBody([
-            html.Div(nombre, className="kpi-label"),
-            html.Div(val, className="kpi-value"),
-            html.Div(f"{flecha} {abs(var):.1f}%  ·  {val_ant} año anterior" if var is not None else "—",
-                      style={"color": color, "fontSize": "12px", "marginTop": "4px"}),
-        ]), className="kpi-card"), md=3))
-    return dbc.Row(cards, className="g-3")
+    return html.Div([
+        metric_card(nombre, valor,
+                    f"{fmt_pct(var)} vs {int(a_ant.anio)} · {ant}",
+                    "good" if var is not None and var >= 0 else "bad" if var is not None else "muted")
+        for nombre, valor, var, ant in filas
+    ], className="metric-grid annual-grid")
 
 
-# ================= Cross-sell =================
+# =========================
+# Cross-sell
+# =========================
 @app.callback(Output("tabla-combos", "data"), Output("tabla-combos", "columns"),
               Input("f-tienda", "value"), Input("combo-orden", "value"), Input("store-seleccion", "data"))
 def _combos_top(tienda, orden, seleccion):
     if not tienda:
         return [], []
-    pasillo_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "rack" else None
+    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
     df = db.get_top_combos(tienda, n=40, orden=orden, pasillo=pasillo_f, rack=rack_f)
-    cols = [{"name": n, "id": c} for n, c in
-            [("Producto A", "desc_a"), ("Producto B", "desc_b"), ("Boletas juntas", "boletas"),
-             ("Soporte", "soporte"), ("Confianza", "confianza_a_b"), ("Lift", "lift")]]
-    return df.to_dict("records"), cols
+    cols = [
+        {"name": "Producto A", "id": "desc_a"}, {"name": "Producto B", "id": "desc_b"},
+        {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
+        {"name": "Soporte", "id": "soporte", "type": "numeric"},
+        {"name": "Confianza", "id": "confianza_a_b", "type": "numeric"},
+        {"name": "Lift", "id": "lift", "type": "numeric"},
+    ]
+    return clean_records(df), cols
 
 
 @app.callback(Output("combo-producto", "options"), Input("f-tienda", "value"))
@@ -619,13 +984,18 @@ def _combos_producto(tienda, sku):
     if not tienda or not sku:
         return [], []
     df = db.get_combos_de_producto(tienda, sku, n=15)
-    cols = [{"name": n, "id": c} for n, c in
-            [("Se compra junto con", "producto"), ("Boletas juntas", "boletas"),
-             ("Confianza", "confianza"), ("Lift", "lift")]]
-    return df.to_dict("records"), cols
+    cols = [
+        {"name": "Se compra junto con", "id": "producto"},
+        {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
+        {"name": "Confianza", "id": "confianza", "type": "numeric"},
+        {"name": "Lift", "id": "lift", "type": "numeric"},
+    ]
+    return clean_records(df), cols
 
 
-# ================= Administrar planos =================
+# =========================
+# Administrar planos
+# =========================
 @app.callback(Output("admin-tienda", "options"), Output("admin-tienda", "value"), Input("url", "pathname"))
 def _admin_init(pathname):
     if pathname != "/admin":
@@ -633,9 +1003,9 @@ def _admin_init(pathname):
     _lazy_init()
     tiendas = db.get_tiendas()
     con_plano = set(db.tiendas_con_plano())
-    opts = [{"label": f"{r.cod_tienda} {'✅' if r.cod_tienda in con_plano else ''}", "value": r.cod_tienda}
+    opts = [{"label": f"{r.cod_tienda} {'· plano cargado' if r.cod_tienda in con_plano else ''}", "value": r.cod_tienda}
             for r in tiendas.itertuples()]
-    return opts, (tiendas["cod_tienda"].iloc[0] if len(tiendas) else None)
+    return opts, ("SANRO" if "SANRO" in tiendas["cod_tienda"].tolist() else (tiendas["cod_tienda"].iloc[0] if len(tiendas) else None))
 
 
 @app.callback(Output("admin-imagen-preview", "children"), Output("admin-imagen-store", "data"),
@@ -643,7 +1013,7 @@ def _admin_init(pathname):
 def _admin_preview_imagen(contents):
     if not contents:
         return None, None
-    return html.Img(src=contents, style={"maxWidth": "100%", "borderRadius": "8px", "marginTop": "10px"}), contents
+    return html.Img(src=contents, className="admin-preview"), contents
 
 
 @app.callback(Output("admin-plano-msg", "children"),
@@ -654,7 +1024,7 @@ def _admin_guardar_plano(n, contents, tienda):
         return dbc.Alert("Primero sube una imagen.", color="warning")
     from PIL import Image
     import io as _io
-    header, b64data = contents.split(",", 1)
+    _, b64data = contents.split(",", 1)
     raw = base64.b64decode(b64data)
     img = Image.open(_io.BytesIO(raw)).convert("RGB")
     buf = _io.BytesIO()
@@ -671,7 +1041,7 @@ def _admin_guardar_coords(n, contents, tienda, nivel):
     if not contents or not tienda:
         return dbc.Alert("Primero sube un CSV.", color="warning")
     import io as _io
-    header, b64data = contents.split(",", 1)
+    _, b64data = contents.split(",", 1)
     raw = base64.b64decode(b64data)
     df = pd.read_csv(_io.BytesIO(raw))
     df.columns = [c.lower() for c in df.columns]
@@ -693,9 +1063,8 @@ def _admin_tablas(tienda, *_):
     cp = db.get_coords(tienda, "pasillo")
     cr = db.get_coords(tienda, "rack")
     cols = [{"name": n, "id": c} for n, c in [("Clave", "clave"), ("X", "x"), ("Y", "y")]]
-    return cp.to_dict("records"), cols, cr.to_dict("records"), cols
+    return clean_records(cp), cols, clean_records(cr), cols
 
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 8050)))
-

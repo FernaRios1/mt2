@@ -191,6 +191,37 @@ def main():
         rows, page_size=5000)
     print(f"fact_venta_semana: {len(rows):,} filas")
 
+    # --- agregados anuales para recomendaciones (mantiene 2025 seed y refresca año actual) ---
+    tiendas_df = sorted(df["cod_tienda"].dropna().astype(str).unique().tolist())
+    for anio_actual in sorted(df["anio"].dropna().astype(int).unique().tolist()):
+        # El dataframe trae el año completo a la fecha: reemplazar el agregado evita filas obsoletas
+        # si un SKU cambia de rack o se corrige la Etiqueta_base.
+        cur.execute("DELETE FROM fact_pasillo_rack_anio WHERE anio=%s AND cod_tienda = ANY(%s)",
+                    (anio_actual, tiendas_df))
+        pr = (df[df["anio"] == anio_actual]
+              .groupby(["cod_tienda", "anio", "pasillo", "rack"], as_index=False)
+              .agg(venta=("total", "sum")))
+        rows_pr = [(str(r.cod_tienda), int(r.anio), str(r.pasillo), str(r.rack), float(r.venta))
+                   for r in pr.itertuples(index=False)]
+        if rows_pr:
+            psycopg2.extras.execute_values(
+                cur, "INSERT INTO fact_pasillo_rack_anio (cod_tienda,anio,pasillo,rack,venta) VALUES %s",
+                rows_pr, page_size=5000)
+
+        cur.execute("DELETE FROM fact_producto_anio WHERE anio=%s AND cod_tienda = ANY(%s)",
+                    (anio_actual, tiendas_df))
+        pa = (df[df["anio"] == anio_actual]
+              .groupby(["cod_tienda", "anio", "cod_rapido"], as_index=False)
+              .agg(venta=("total", "sum"), cantidad=("cantidad", "sum")))
+        rows_pa = [(str(r.cod_tienda), int(r.anio), str(r.cod_rapido), float(r.venta), float(r.cantidad))
+                   for r in pa.itertuples(index=False)]
+        if rows_pa:
+            psycopg2.extras.execute_values(
+                cur, "INSERT INTO fact_producto_anio (cod_tienda,anio,cod_rapido,venta,cantidad) VALUES %s",
+                rows_pa, page_size=5000)
+
+    print("Agregados YTD de rack/producto actualizados.")
+
     # --- dim_producto_tienda ---
     dim = (df.sort_values("fecha_emision")
              .groupby(["cod_tienda", "cod_rapido"], as_index=False)
