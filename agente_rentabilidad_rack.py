@@ -6,6 +6,7 @@ Objetivo:
 - mantener stock/atributos/ubicación actual de TODOS los SKU del stock, incluso
   si no vendieron,
 - evitar duplicados obsoletos cuando un SKU cambia de rack,
+- reconstruir la ubicación FÍSICA real para la ventana que aún existe en INFSTOCK (aprox. 3 meses),
 - recalcular agregados, comparativo y cross-sell.
 
 Se ejecuta en un PC/servidor con acceso a SQL Server. Railway no necesita
@@ -79,6 +80,55 @@ SELECT cod_tienda, cod_rapido, etiqueta_exhibicion, etiqueta, zona_pck,
        clasificacion, responsable_linea
 FROM StockRank
 WHERE rn = 1 AND cod_tienda IN ({STORE_SQL});
+"""
+
+
+
+# Historial de ubicación física. INFSTOCK se recorta y normalmente conserva
+# alrededor de 3 meses, por eso pedimos 100 días y comprimimos en SQL solo los
+# días donde cambia la etiqueta. Así no transferimos millones de snapshots diarios.
+QUERY_UBIC_HIST = f"""
+DECLARE @IniHist date = DATEADD(DAY, -100, CAST(GETDATE() AS date));
+
+WITH Base AS (
+    SELECT
+        CAST(s.Fecha_Proceso AS date) AS fecha_ubicacion,
+        s.Cod_Rapido AS cod_rapido,
+        {STORE_CASE} AS cod_tienda,
+        s.Etiqueta_Exhibicion AS etiqueta_exhibicion,
+        s.Etiqueta AS etiqueta,
+        s.Zona_pck AS zona_pck,
+        s.ManejaStock AS maneja_stock,
+        ROW_NUMBER() OVER (
+            PARTITION BY s.cod_emp, s.Cod_Rapido, CAST(s.Fecha_Proceso AS date)
+            ORDER BY s.Fecha_Proceso DESC
+        ) AS rn
+    FROM SAV.dbo.SAV_CI_INFSTOCKBODEGA_DIARIO s WITH (NOLOCK)
+    WHERE CAST(s.Fecha_Proceso AS date) >= @IniHist
+),
+Daily AS (
+    SELECT fecha_ubicacion, cod_rapido, cod_tienda,
+           CASE
+             WHEN zona_pck IN ('Z03','Z04','Z06') OR maneja_stock = 'N'
+               THEN COALESCE(NULLIF(LTRIM(RTRIM(etiqueta_exhibicion)),''), LTRIM(RTRIM(etiqueta)))
+             ELSE COALESCE(NULLIF(LTRIM(RTRIM(etiqueta)),''), LTRIM(RTRIM(etiqueta_exhibicion)))
+           END AS etiqueta_base
+    FROM Base
+    WHERE rn = 1 AND cod_tienda IN ({STORE_SQL})
+),
+Cambios AS (
+    SELECT *,
+           LAG(ISNULL(etiqueta_base,'')) OVER (
+               PARTITION BY cod_tienda, cod_rapido ORDER BY fecha_ubicacion
+           ) AS etiqueta_previa
+    FROM Daily
+)
+SELECT fecha_ubicacion, cod_tienda, cod_rapido,
+       LEFT(ISNULL(etiqueta_base,''),3) AS pasillo,
+       LEFT(ISNULL(etiqueta_base,''),8) AS rack
+FROM Cambios
+WHERE etiqueta_previa IS NULL OR etiqueta_previa <> ISNULL(etiqueta_base,'')
+ORDER BY fecha_ubicacion, cod_tienda, cod_rapido;
 """
 
 # Venta: año actual y año anterior exactamente al mismo corte. Usamos ayer para
@@ -187,6 +237,7 @@ def main():
     print(f"[{datetime.datetime.now()}] Leyendo SQL Server...")
     with pyodbc.connect(SQLSERVER_DSN) as cn:
         stock = pd.read_sql(QUERY_STOCK, cn)
+        ubic_hist = pd.read_sql(QUERY_UBIC_HIST, cn)
         ventas = pd.read_sql(QUERY_VENTAS, cn)
 
     if stock.empty:
@@ -211,6 +262,34 @@ def main():
     ventas["total"] = pd.to_numeric(ventas["total"], errors="coerce").fillna(0)
     ventas["cantidad"] = pd.to_numeric(ventas["cantidad"], errors="coerce").fillna(0)
 
+    # -------- Ubicación física histórica disponible (aprox. últimos 3 meses) --------
+    venta_fisica = pd.DataFrame()
+    cobertura_fisica = 0.0
+    fecha_hist_min = fecha_hist_max = None
+    if ubic_hist is not None and not ubic_hist.empty:
+        ubic_hist["cod_tienda"] = ubic_hist["cod_tienda"].astype(str).str.strip()
+        ubic_hist["cod_rapido"] = ubic_hist["cod_rapido"].astype(str).str.strip()
+        ubic_hist["fecha_ubicacion"] = pd.to_datetime(ubic_hist["fecha_ubicacion"]).dt.normalize()
+        ubic_hist["pasillo"] = ubic_hist["pasillo"].fillna("").astype(str).str.strip()
+        ubic_hist["rack"] = ubic_hist["rack"].fillna("").astype(str).str.strip()
+        fecha_hist_min = ubic_hist["fecha_ubicacion"].min()
+        fecha_hist_max = ubic_hist["fecha_ubicacion"].max()
+
+        ventas_rec = ventas[(ventas["fecha_emision"].dt.normalize() >= fecha_hist_min) &
+                            (ventas["fecha_emision"].dt.normalize() <= fecha_hist_max)].copy()
+        if not ventas_rec.empty:
+            ventas_rec["fecha_dia"] = ventas_rec["fecha_emision"].dt.normalize()
+            # merge_asof requiere que la clave temporal esté ordenada globalmente.
+            left = ventas_rec.sort_values(["fecha_dia", "cod_tienda", "cod_rapido"])
+            right = ubic_hist.sort_values(["fecha_ubicacion", "cod_tienda", "cod_rapido"])
+            venta_fisica = pd.merge_asof(
+                left, right, left_on="fecha_dia", right_on="fecha_ubicacion",
+                by=["cod_tienda", "cod_rapido"], direction="backward", allow_exact_matches=True
+            )
+            venta_fisica = venta_fisica[(venta_fisica["pasillo"].fillna("").astype(str).str.strip() != "")].copy()
+            total_rec = float(ventas_rec["total"].sum() or 0)
+            cobertura_fisica = float(venta_fisica["total"].sum()) / total_rec if total_rec else 0.0
+
     attrs = stock[["cod_tienda", "cod_rapido", "pasillo", "rack"]].drop_duplicates(["cod_tienda", "cod_rapido"])
     venta_rack = ventas.merge(attrs, on=["cod_tienda", "cod_rapido"], how="left")
     sin_ubic = venta_rack["pasillo"].isna() | (venta_rack["pasillo"].fillna("").astype(str).str.strip() == "")
@@ -230,6 +309,25 @@ def main():
         # versión de la web haya ejecutado schema.sql por primera vez.
         cur.execute("ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS pasillo VARCHAR(20)")
         cur.execute("ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS rack VARCHAR(20)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fact_venta_rack_dia (
+                cod_tienda VARCHAR(10) NOT NULL REFERENCES dim_tienda(cod_tienda),
+                fecha DATE NOT NULL, anio SMALLINT NOT NULL, mes SMALLINT NOT NULL, semana SMALLINT NOT NULL,
+                pasillo VARCHAR(20) NOT NULL, rack VARCHAR(20) NOT NULL DEFAULT '',
+                cod_rapido VARCHAR(30) NOT NULL, venta NUMERIC(14,2) NOT NULL DEFAULT 0,
+                cantidad NUMERIC(14,2) NOT NULL DEFAULT 0,
+                PRIMARY KEY (cod_tienda, fecha, pasillo, rack, cod_rapido)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fvrd_tienda_fecha ON fact_venta_rack_dia (cod_tienda, fecha)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fvrd_tienda_rack ON fact_venta_rack_dia (cod_tienda, rack, fecha)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sync_ubicacion_fisica (
+                cod_tienda VARCHAR(10) PRIMARY KEY REFERENCES dim_tienda(cod_tienda),
+                fecha_desde DATE, fecha_hasta DATE, cobertura_venta_pct NUMERIC(7,4),
+                actualizado TIMESTAMP DEFAULT now()
+            )
+        """)
 
         # -------- Dimensión: stock actual completo, incluso sin venta --------
         desc = (ventas.sort_values("fecha_emision")
@@ -272,6 +370,59 @@ def main():
                 rows_fact, page_size=5000)
         print(f"fact_venta_semana: {len(rows_fact):,} filas")
 
+        # -------- Hecho físico diario: solo ventana realmente disponible en INFSTOCK --------
+        rows_fis = []
+        if venta_fisica is not None and not venta_fisica.empty:
+            vf = venta_fisica.copy()
+            vf["anio"] = vf["fecha_dia"].dt.year.astype(int)
+            vf["mes"] = vf["fecha_dia"].dt.month.astype(int)
+            vf["semana"] = vf["fecha_dia"].dt.isocalendar().week.astype(int)
+            agg_f = (vf.groupby(["cod_tienda","fecha_dia","anio","mes","semana","pasillo","rack","cod_rapido"], as_index=False)
+                       .agg(venta=("total","sum"), cantidad=("cantidad","sum")))
+            rows_fis = [(str(r.cod_tienda), r.fecha_dia.date(), int(r.anio), int(r.mes), int(r.semana),
+                         str(r.pasillo), str(r.rack), str(r.cod_rapido), float(r.venta), float(r.cantidad))
+                        for r in agg_f.itertuples(index=False)]
+
+        # Se reemplaza toda la ventana reciente para que cambios de rack no dejen registros obsoletos.
+        if fecha_hist_min is not None:
+            cur.execute("DELETE FROM fact_venta_rack_dia WHERE cod_tienda = ANY(%s) AND fecha >= %s",
+                        (tiendas, fecha_hist_min.date()))
+        if rows_fis:
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO fact_venta_rack_dia (cod_tienda,fecha,anio,mes,semana,pasillo,rack,cod_rapido,venta,cantidad) VALUES %s "
+                "ON CONFLICT (cod_tienda,fecha,pasillo,rack,cod_rapido) DO UPDATE SET "
+                "venta=EXCLUDED.venta,cantidad=EXCLUDED.cantidad",
+                rows_fis, page_size=5000)
+        if fecha_hist_min is not None:
+            print(f"fact_venta_rack_dia: {len(rows_fis):,} filas | {fecha_hist_min.date()} a {fecha_hist_max.date()} | cobertura $ {cobertura_fisica:.1%}")
+        else:
+            print("fact_venta_rack_dia: sin historial de ubicación disponible")
+
+        # Cobertura real de INFSTOCK por tienda. Se guarda aparte porque una tienda
+        # puede no haber vendido justo el primer día de historia y eso no significa
+        # que falte ubicación para ese día.
+        cur.execute("DELETE FROM sync_ubicacion_fisica WHERE cod_tienda = ANY(%s)", (tiendas,))
+        meta_rows = []
+        if ubic_hist is not None and not ubic_hist.empty:
+            for cod_tienda, gh in ubic_hist.groupby("cod_tienda"):
+                d0 = gh["fecha_ubicacion"].min().date()
+                d1 = gh["fecha_ubicacion"].max().date()
+                vr = ventas[(ventas["cod_tienda"] == cod_tienda) &
+                            (ventas["fecha_emision"].dt.date >= d0) &
+                            (ventas["fecha_emision"].dt.date <= d1)]
+                vf = venta_fisica[venta_fisica["cod_tienda"] == cod_tienda] if not venta_fisica.empty else pd.DataFrame()
+                den = float(vr["total"].sum() or 0)
+                cov = float(vf["total"].sum()) / den if den else 0.0
+                meta_rows.append((str(cod_tienda), d0, d1, round(cov, 4)))
+        if meta_rows:
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO sync_ubicacion_fisica (cod_tienda,fecha_desde,fecha_hasta,cobertura_venta_pct) VALUES %s "
+                "ON CONFLICT (cod_tienda) DO UPDATE SET fecha_desde=EXCLUDED.fecha_desde, "
+                "fecha_hasta=EXCLUDED.fecha_hasta,cobertura_venta_pct=EXCLUDED.cobertura_venta_pct,actualizado=now()",
+                meta_rows, page_size=100)
+
         # -------- Agregados anuales --------
         cur.execute("DELETE FROM fact_pasillo_rack_anio WHERE cod_tienda = ANY(%s) AND anio = ANY(%s)", (tiendas, anios))
         pr = (venta_rack.groupby(["cod_tienda", "anio", "pasillo", "rack"], as_index=False)
@@ -313,7 +464,9 @@ def main():
                 "INSERT INTO fact_cross_sell (cod_tienda,sku_a,sku_b,desc_a,desc_b,boletas,soporte,confianza_a_b,confianza_b_a,lift) VALUES %s",
                 list(cs.itertuples(index=False, name=None)), page_size=5000)
 
-        mensaje = f"OK | años {','.join(map(str, anios))} | cobertura ubicación {cobertura:.1%}"
+        rango_fis = (f"{fecha_hist_min.date()}..{fecha_hist_max.date()}" if fecha_hist_min is not None else "sin historial")
+        mensaje = (f"OK | años {','.join(map(str, anios))} | ubicación surtido actual {cobertura:.1%} | "
+                   f"ubicación física {rango_fis} cobertura {cobertura_fisica:.1%}")
         cur.execute("INSERT INTO sync_log (filas_venta, ok, mensaje) VALUES (%s,%s,%s)",
                     (len(rows_fact), True, mensaje))
         conn.commit()

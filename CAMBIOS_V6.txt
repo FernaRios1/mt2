@@ -1,0 +1,10 @@
+V6
+- Historial físico real solo dentro de la ventana disponible de INFSTOCK (~3 meses).
+- Ventas recientes se mapean a la ubicación que tenía el SKU en la fecha de venta.
+- Fuera de la ventana: vista "Surtido actual" y sin recomendaciones de espacio.
+- Rack físico compara contra período inmediatamente anterior, no contra 2025.
+- Agosto parcial compara los mismos días de julio.
+- Diagnóstico separa "Surtido vigente hoy" de "Qué categorías vendieron físicamente aquí".
+- Si hubo venta histórica pero hoy el rack tiene 0 SKU asociados, se marca como rack cambiado.
+- Cross-sell al seleccionar rack/pasillo usa el surtido vigente de esa sección.
+- Dropdowns del sidebar ahora tienen fondo oscuro para garantizar contraste.

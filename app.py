@@ -94,11 +94,11 @@ ACTION_STYLE = [
      "backgroundColor": "#FEE2E2", "color": "#991B1B", "fontWeight": "700"},
     {"if": {"filter_query": '{prioridad} = "Media"', "column_id": "prioridad"},
      "backgroundColor": "#FEF3C7", "color": "#92400E", "fontWeight": "700"},
-    {"if": {"filter_query": '{accion} = "Potenciar rack"', "column_id": "accion"},
+    {"if": {"filter_query": '{accion} = "Potenciar espacio"', "column_id": "accion"},
      "color": "#047857", "fontWeight": "700"},
-    {"if": {"filter_query": '{accion} = "Proteger venta"', "column_id": "accion"},
+    {"if": {"filter_query": '{accion} = "Proteger desempeño"', "column_id": "accion"},
      "color": "#B45309", "fontWeight": "700"},
-    {"if": {"filter_query": '{accion} = "Revisar rack"', "column_id": "accion"},
+    {"if": {"filter_query": '{accion} = "Revisar espacio"', "column_id": "accion"},
      "color": "#B91C1C", "fontWeight": "700"},
     {"if": {"state": "active"}, "backgroundColor": "#FFF7ED", "border": "1px solid #FDBA74"},
 ]
@@ -159,7 +159,7 @@ sidebar = html.Aside([
     html.Div(label_with_tip("Tienda", "Todo el dashboard se calcula para la tienda seleccionada. Cross-sell también se limita a esta tienda."), className="side-label"),
     dcc.Dropdown(id="f-tienda", clearable=False, className="side-dd"),
 
-    html.Div(label_with_tip("Período", "Mes = ventas del mes elegido. Semana = semana ISO elegida. Año = acumulado del año disponible. La variación prioriza el mismo período del año anterior y, si no existe ese detalle, usa el período anterior disponible del mismo año."), className="side-label side-gap"),
+    html.Div(label_with_tip("Período", "Mes/Semana dentro del historial de ubicación disponible usan el rack físico real de cada fecha. INFSTOCK conserva aprox. 3 meses. Para períodos más antiguos o Año, la vista usa el surtido/ubicación vigente y no emite recomendaciones de espacio."), className="side-label side-gap"),
     dcc.RadioItems(
         id="f-modo-periodo",
         options=[{"label": "Mes", "value": "Mes"}, {"label": "Semana", "value": "Semana"},
@@ -171,7 +171,7 @@ sidebar = html.Aside([
     dcc.Dropdown(id="f-semana", clearable=False, className="side-dd", style={"display": "none"}),
 
     html.Details([
-        html.Summary([html.Span("Filtros avanzados"), info_tip("Filtran venta, mapa, recomendaciones, diagnóstico, productos y categorías. El stock sin venta siempre se evalúa YTD y cross-sell usa todas las boletas del año de la tienda.")], className="filters-summary"),
+        html.Summary([html.Span("Filtros avanzados"), info_tip("Filtran venta, mapa, diagnóstico, productos y categorías. Las recomendaciones de espacio solo aparecen cuando el período tiene ubicación física histórica. Stock sin venta es YTD y cross-sell usa el año completo de la tienda.")], className="filters-summary"),
         html.Div([
             dcc.Dropdown(id="f-familia", multi=True, placeholder="Familia", className="side-dd"),
             dcc.Dropdown(id="f-categoria", multi=True, placeholder="Categoría", className="side-dd"),
@@ -189,8 +189,7 @@ sidebar = html.Aside([
 
     html.Div(className="sidebar-spacer"),
     dcc.Link("Administrar planos", href="/admin", className="side-navlink"),
-    html.Div("Las recomendaciones usan venta, tendencia y surtido. El margen se incorporará cuando esté disponible.",
-             className="side-foot"),
+    html.Div("INFSTOCK conserva aprox. 3 meses de ubicación. Fuera de esa ventana la app analiza surtido actual, no desempeño físico histórico. Margen pendiente.", className="side-foot"),
 ], className="sidebar")
 
 
@@ -201,9 +200,9 @@ action_table = dash_table.DataTable(
     cell_selectable=True,
     tooltip_header={
         "prioridad": "Orden de atención definido por el motor de recomendaciones. No usa margen.",
-        "accion": "Acción sugerida a partir de nivel de venta, variación, surtido y venta por SKU.",
+        "accion": "Acción sugerida solo con ubicación física histórica disponible. No usa margen ni comparación anual.",
         "venta": "Suma de venta del rack en el período y filtros activos.",
-        "variacion_pct": "(Venta actual - venta comparable) / venta comparable. La comparación usada se muestra arriba del cuadro.",
+        "variacion_pct": "(Venta física actual - venta física del período inmediatamente anterior) / venta anterior. Solo dentro de la ventana histórica disponible.",
         "skus": "Cantidad de SKU distintos que tuvieron venta en ese rack durante el período seleccionado.",
         "venta_por_sku": "Venta del rack dividida por la cantidad de SKU distintos con venta. No es margen ni rentabilidad.",
         "motivo": "Señal concreta que hizo que el rack recibiera esa recomendación.",
@@ -219,8 +218,8 @@ main = html.Main([
         html.Div(id="action-summary"),
         html.Div("Haz clic en una fila para analizar ese rack. Pasa el mouse sobre los íconos i o encabezados para ver cómo se calcula cada indicador.", className="micro-help"),
         action_table,
-    ], subtitle="Recomendaciones explicables usando venta, variación y surtido. No usa margen.",
-       tooltip="Motor actual sin margen: Proteger venta = rack top 30% en venta con caída de 10% o más; Revisar rack = rack bottom 30% con caída de 10% o más; Potenciar = top 30% con crecimiento de 10% o más (o alta venta por SKU si no hay comparación); Optimizar surtido = venta bajo la mediana y cantidad de SKU con venta en el 30% superior."),
+    ], subtitle="Recomendaciones de espacio solo cuando la ubicación física del período está disponible. Compara con el período inmediatamente anterior; no usa margen.",
+       tooltip="Solo se activa con ubicación física histórica. Compara el mismo rack contra el período inmediatamente anterior dentro de la ventana de INFSTOCK. Proteger desempeño = alta venta física + caída; Revisar espacio = baja venta física + caída; Potenciar = alta venta física + crecimiento; Revisar mix = muchos SKU vendidos con venta bajo la mediana. No usa margen ni año anterior."),
 
     dbc.Row([
         dbc.Col(section("Mapa de la tienda", [
@@ -247,7 +246,7 @@ main = html.Main([
 
     section("Explorar el porqué", [
         html.Div([
-            html.Div("Venta/productos/categorías respetan tienda, período, filtros y rack/pasillo. Stock sin venta es YTD. Cross-sell usa el año completo de la tienda.", className="micro-help"),
+            html.Div("La app distingue desempeño físico reciente de surtido vigente. Si el período queda fuera del historial de ubicación (~3 meses), la vista se marca como surtido actual y no recomienda cambios de espacio.", className="micro-help"),
             html.Div([
                 html.Button("Descargar detalle filtrado", id="btn-download-detalle", n_clicks=0, className="download-button"),
                 html.Button("Descargar stock sin venta", id="btn-download-sinventa", n_clicks=0, className="download-button"),
@@ -314,7 +313,7 @@ main = html.Main([
                                          }),
                     html.Hr(className="soft-hr"),
                     html.Div(label_with_tip("Productos que se compran juntos", "Cross-sell se calcula solo con transacciones de la tienda seleccionada y usando las boletas del año completo disponible. Mes/Semana no recalculan estas relaciones."), className="subblock-title"),
-                    html.Div("Ámbito: tienda seleccionada · año completo disponible. Si eliges un rack/pasillo, se muestran relaciones vinculadas a productos de esa sección.",
+                    html.Div("Ámbito: tienda seleccionada · año completo disponible. Si eliges un rack/pasillo, se muestran relaciones vinculadas al surtido vigente hoy en esa sección.",
                              className="section-subtitle"),
                     html.Div([
                         html.Strong("Cómo leerlo: "),
@@ -596,58 +595,71 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
     mes_sel = mes if modo == "Mes" else None
     semana_sel = semana if modo == "Semana" else None
-    df = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
+    ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
+
+    if not ctx.get("cubierto"):
+        rango = (f"{ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}" if ctx.get("desde") else "aún no cargado")
+        summary = html.Div([
+            html.Div([
+                html.Span("Sin recomendación de espacio", className="mode-pill"),
+                html.Strong("Este período no tiene ubicación física histórica completa."),
+            ], className="action-hero-top"),
+            html.P(ctx.get("motivo"), className="action-hero-text"),
+            html.P(f"Historial físico disponible: {rango}. Puedes seguir analizando venta y surtido actual, pero no sería correcto afirmar que el mismo rack físico subió o bajó.", className="action-hero-reco"),
+        ], className="action-summary")
+        return summary, [], []
+
+    df = db.get_acciones_rack_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
     if df.empty:
-        return html.Div("No hay datos para construir recomendaciones."), [], []
+        return html.Div("No hay datos físicos suficientes para construir recomendaciones."), [], []
 
     accionables = df[df["accion"] != "Mantener"].copy()
     alta = int((df["prioridad"] == "Alta").sum())
-    proteger = int((df["accion"] == "Proteger venta").sum())
-    revisar = int((df["accion"] == "Revisar rack").sum())
-    potenciar = int((df["accion"] == "Potenciar rack").sum())
-    optimizar = int((df["accion"] == "Optimizar surtido").sum())
+    proteger = int((df["accion"] == "Proteger desempeño").sum())
+    revisar = int((df["accion"] == "Revisar espacio").sum())
+    potenciar = int((df["accion"] == "Potenciar espacio").sum())
+    mix = int((df["accion"] == "Revisar mix").sum())
+    cambios = int((df["accion"] == "Rack cambió").sum())
 
     top = accionables.iloc[0] if len(accionables) else df.iloc[0]
-    comp_label = None
-    if "comparacion_label" in df.columns and len(df):
-        comp_label = df.iloc[0].get("comparacion_label")
+    comp_label = df.iloc[0].get("comparacion_label") if len(df) else None
     periodo_actual = (f"Semana {semana_sel}" if semana_sel else
                       MONTHS.get(int(mes_sel), f"Mes {mes_sel}") if mes_sel else f"Año {anio}")
-    comparacion_note = (f"Acciones calculadas para {periodo_actual}. Comparación: {comp_label}."
+    comparacion_note = (f"Desempeño físico de {periodo_actual} vs {comp_label}. "
+                        "No usa año anterior: INFSTOCK no conserva ubicación histórica suficiente para eso."
                         if comp_label else
-                        f"Acciones calculadas para {periodo_actual}. Sin período comparable disponible; se usa nivel de venta y venta por SKU.")
+                        f"Desempeño físico de {periodo_actual}; no hay período anterior completamente cubierto dentro del historial disponible.")
 
     summary = html.Div([
         html.Div([
-            html.Div([html.Span(top["prioridad"], className=f"priority-pill priority-{top['prioridad'].lower()}"),
-                      html.Span(f"Rack {top['rack']} · Pasillo {top['pasillo']}", className="action-location")],
-                     className="action-hero-top"),
+            html.Div([html.Span(top["prioridad"], className=f"priority-pill priority-{str(top['prioridad']).lower()}"),
+                      html.Span(f"Rack {top['rack']} · Pasillo {top['pasillo']}", className="action-location")], className="action-hero-top"),
             html.H3(top["accion"], className="action-hero-title"),
             html.P(top["motivo"], className="action-hero-text"),
             html.P(top["recomendacion"], className="action-hero-reco"),
         ], className="action-hero"),
         html.Div([
             html.Div([html.Strong(alta), html.Span("prioridad alta")], className="mini-stat"),
-            html.Div([html.Strong(proteger), html.Span("proteger")], className="mini-stat"),
-            html.Div([html.Strong(revisar), html.Span("revisar")], className="mini-stat"),
+            html.Div([html.Strong(proteger), html.Span("proteger desempeño")], className="mini-stat"),
+            html.Div([html.Strong(revisar), html.Span("revisar espacio")], className="mini-stat"),
             html.Div([html.Strong(potenciar), html.Span("potenciar")], className="mini-stat"),
-            html.Div([html.Strong(optimizar), html.Span("optimizar")], className="mini-stat"),
+            html.Div([html.Strong(mix), html.Span("revisar mix")], className="mini-stat"),
+            html.Div([html.Strong(cambios), html.Span("racks cambiados")], className="mini-stat"),
         ], className="mini-stat-grid"),
         html.Div(comparacion_note, className="engine-note"),
     ], className="action-summary")
 
     view = accionables[["prioridad", "accion", "pasillo", "rack", "venta", "variacion_pct",
-                        "skus", "venta_por_sku", "motivo"]].head(250).copy()
+                        "skus", "skus_asociados_hoy", "venta_por_sku", "motivo"]].head(250).copy()
     view["id"] = view["rack"].astype(str)
     cols = [
-        {"name": "Prioridad", "id": "prioridad"},
-        {"name": "Acción", "id": "accion"},
-        {"name": "Pasillo", "id": "pasillo"},
-        {"name": "Rack", "id": "rack"},
-        {"name": "Venta período", "id": "venta", "type": "numeric", "format": MONEY_FMT},
-        {"name": "Variación venta", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
-        {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Prioridad", "id": "prioridad"}, {"name": "Acción", "id": "accion"},
+        {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
+        {"name": "Venta física", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Variación vs período anterior", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "SKU vendidos aquí", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "SKU asociados hoy", "id": "skus_asociados_hoy", "type": "numeric", "format": NUM_FMT},
+        {"name": "Venta / SKU vendido", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Por qué", "id": "motivo"},
     ]
     return summary, clean_records(view), cols
@@ -683,22 +695,48 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     semana_sel = semana if modo == "Semana" else None
     filtros = make_filters(maneja_sel, familia, categoria, clasificacion, zona_pck, responsable_linea, marca)
     nivel_mapa = "pasillo" if nivel_mapa_lbl == "Pasillo" else "rack"
+    ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
+    fisico = bool(ctx.get("cubierto"))
 
     pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    hay_seccion = bool(pasillo_f or rack_f)
 
-    resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+    # Total tienda/producto es seguro sin ubicación. Al seleccionar una sección y existir
+    # cobertura física, usamos la ubicación real que tenía cada SKU en la fecha de venta.
+    if fisico and hay_seccion:
+        resumen = db.get_resumen_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                        pasillo=pasillo_f, rack=rack_f) or {}
+    else:
+        resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                         pasillo=pasillo_f, rack=rack_f)
+
+    if fisico:
+        pasillos = db.get_pasillo_resumen_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                                 pasillo=pasillo_f, rack=rack_f)
+        racks = db.get_rack_detalle_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                           pasillo=pasillo_f, rack=rack_f)
+    else:
+        pasillos = db.get_pasillo_resumen(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                          pasillo=pasillo_f, rack=rack_f)
+        racks = db.get_rack_detalle(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                    pasillo=pasillo_f, rack=rack_f)
+
+    if fisico and hay_seccion:
+        top = db.get_top_productos_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                          pasillo=pasillo_f, rack=rack_f, n=50)
+        baja = db.get_top_productos_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                           pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
+        tree = db.get_treemap_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
                                      pasillo=pasillo_f, rack=rack_f)
-    pasillos = db.get_pasillo_resumen(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                      pasillo=pasillo_f, rack=rack_f)
-    racks = db.get_rack_detalle(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                pasillo=pasillo_f, rack=rack_f)
-    top = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                               pasillo=pasillo_f, rack=rack_f, n=50)
-    baja = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
-    tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                          pasillo=pasillo_f, rack=rack_f)
+    else:
+        top = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                   pasillo=pasillo_f, rack=rack_f, n=50)
+        baja = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                    pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
+        tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                              pasillo=pasillo_f, rack=rack_f)
+
     sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
     acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250, pasillo=pasillo_f, rack=rack_f)
 
@@ -713,23 +751,16 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     else:
         periodo_txt = f"Año {anio}"
 
-    selection_txt = None
-    if rack_f:
-        selection_txt = f"Analizando rack {rack_f}"
-    elif pasillo_f:
-        selection_txt = f"Analizando pasillo {pasillo_f}"
-
+    selection_txt = f"Analizando rack {rack_f}" if rack_f else f"Analizando pasillo {pasillo_f}" if pasillo_f else None
     sync = db.get_sync_status()
     sync_txt = "Datos cargados desde Postgres"
     if sync and sync.get("ejecutado_en") is not None:
         ts = pd.to_datetime(sync["ejecutado_en"], errors="coerce")
         if pd.notna(ts):
             sync_txt = f"Última sincronización: {ts.strftime('%d/%m/%Y %H:%M')}"
-            msg = sync.get("mensaje")
-            if msg and str(msg) != "OK":
-                sync_txt += f" · {msg}"
 
     n_filtros = sum(len(v) for v in filtros.values())
+    mode_chip = "Ubicación física" if fisico else "Surtido actual"
     header = html.Div([
         html.Div([
             html.Div("ANÁLISIS DE ESPACIO", className="page-eyebrow"),
@@ -737,6 +768,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
             html.Div([
                 html.Span(tipo, className="context-chip") if tipo else None,
                 html.Span(periodo_txt, className="context-chip"),
+                html.Span(mode_chip, className="context-chip context-selected"),
                 html.Span(f"{n_filtros} filtros activos", className="context-chip") if n_filtros else None,
                 html.Span(selection_txt, className="context-chip context-selected") if selection_txt else None,
             ], className="context-row"),
@@ -744,70 +776,88 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         html.Div(sync_txt, className="sync-text"),
     ], className="page-header")
 
-    if float(resumen.get("margen") or 0) == 0:
-        margen_status = html.Div([
-            html.Span("Modo desempeño", className="mode-pill"),
-            html.Span("Margen pendiente: las recomendaciones actuales usan venta, tendencia y surtido; no se presenta falsa rentabilidad."),
-        ], className="mode-banner")
+    banners = []
+    if fisico:
+        cov = ctx.get("cobertura_venta_pct")
+        cov_txt = f" · cobertura de venta con ubicación: {cov:.1%}" if cov is not None else ""
+        banners.append(html.Div([
+            html.Span("Rack físico verificado", className="mode-pill mode-pill-good"),
+            html.Span(f"Ubicación reconstruida según la fecha de cada venta. Historial disponible: {ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}{cov_txt}. Las variaciones de rack usan el período inmediatamente anterior dentro de esta ventana; no 2025."),
+        ], className="mode-banner mode-banner-good"))
     else:
-        margen_status = html.Div([
-            html.Span("Rentabilidad activa", className="mode-pill mode-pill-good"),
-            html.Span("La base ya contiene margen y puede incorporarse al motor de decisión."),
-        ], className="mode-banner")
+        rango = f"{ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}" if ctx.get("desde") else "aún no cargado"
+        banners.append(html.Div([
+            html.Span("Vista de surtido actual", className="mode-pill"),
+            html.Span(f"{ctx.get('motivo')} Para este período las ventas por rack se atribuyen a la ubicación vigente hoy. Sirve para analizar los productos del surtido actual, no para afirmar cómo rindió ese espacio físico. Historial físico: {rango}."),
+        ], className="mode-banner"))
+    if float(resumen.get("margen") or 0) == 0:
+        banners.append(html.Div([
+            html.Span("Margen pendiente", className="mode-pill"),
+            html.Span("No se calcula rentabilidad. Los indicadores actuales son de venta, unidades, surtido, stock y afinidad de compra."),
+        ], className="mode-banner mode-banner-neutral"))
+    margen_status = html.Div(banners, className="mode-banner-stack")
 
     var = resumen.get("variacion_pct")
     var_tone = "good" if var is not None and var >= 0 else "bad" if var is not None else "muted"
+    if fisico and hay_seccion:
+        var_label = "Variación física"
+        var_tip = "Compara la venta del mismo rack/pasillo físico contra el período inmediatamente anterior cubierto por INFSTOCK. No compara con el año anterior porque no existe ubicación histórica suficiente."
+    else:
+        var_label = "Variación del surtido"
+        var_tip = "Fuera de la ventana física, la comparación atribuye ventas históricas a la ubicación que los SKU tienen hoy. Úsala para analizar el surtido vigente, no el mismo espacio físico."
     prev_helper = (f"vs {resumen.get('periodo_anterior')}: {fmt_money_short(resumen.get('venta_anterior'))}"
-                   if resumen.get("periodo_anterior") else "Sin período comparable con este nivel de filtro")
+                   if resumen.get("periodo_anterior") else "Sin período comparable válido")
+    racks_count = int(racks["rack"].nunique()) if len(racks) else 0
+    skus_count = int(resumen.get("skus") or 0)
     kpis = [
         metric_card("Venta del período", fmt_money_short(resumen.get("venta")),
                     "Respeta tienda, período, filtros y selección",
-                    tooltip="Suma f.venta de todos los SKU que cumplen la tienda, el período, los filtros avanzados y, si existe, el rack/pasillo seleccionado."),
-        metric_card("Variación de venta", fmt_pct(var), prev_helper, var_tone,
-                    tooltip="Cálculo: (venta actual - venta comparable) / venta comparable × 100. Primero busca el mismo mes/semana del año anterior con los mismos filtros y sección; si no existe, usa el período anterior disponible del mismo año."),
-        metric_card("Racks con venta", f"{int(resumen.get('racks') or 0):,}".replace(",", "."),
-                    f"{int(resumen.get('skus') or 0):,} SKU con venta".replace(",", "."),
-                    tooltip="Cuenta racks distintos que tienen registros de venta en el período y universo filtrado. El texto inferior cuenta SKU distintos con venta, no todos los SKU físicamente asociados."),
+                    tooltip="Suma de venta del universo visible. Si hay una sección seleccionada y el período está cubierto, usa su ubicación física real de la fecha."),
+        metric_card(var_label, fmt_pct(var), prev_helper, var_tone, tooltip=var_tip),
+        metric_card("Racks con venta", f"{racks_count:,}".replace(",", "."),
+                    f"{skus_count:,} SKU con venta".replace(",", "."),
+                    tooltip="Con ubicación física disponible cuenta racks donde realmente ocurrió venta en el período. Fuera de esa ventana cuenta racks atribuidos al surtido vigente."),
         metric_card("SKU con stock sin venta YTD", f"{sinventa_count:,}".replace(",", "."),
                     "Stock > 0 y sin venta positiva en el año", "bad" if sinventa_count else "good",
-                    tooltip="Cuenta SKU que hoy manejan stock, tienen stock positivo y no registran ninguna venta positiva durante el año actual. Respeta tienda, filtros y sección seleccionada; no cambia por Mes/Semana."),
+                    tooltip="SKU del surtido vigente con stock positivo y sin venta positiva en el año. Usa ubicación actual, no histórica."),
     ]
 
-    fig_map = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion)
-    sin_coord = db.get_sin_coordenadas(tienda, nivel=nivel_mapa)
+    fig_map = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion, fisico=fisico)
+    sin_coord = (db.get_sin_coordenadas_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, nivel=nivel_mapa)
+                 if fisico else db.get_sin_coordenadas(tienda, nivel=nivel_mapa))
     if len(sin_coord):
-        coord_status = html.Span(f"{len(sin_coord)} sin coordenada", className="coord-warning")
+        coord_status = html.Span(f"{len(sin_coord)} con venta sin coordenada", className="coord-warning")
     else:
-        coord_status = html.Span("Plano completo", className="coord-ok")
+        coord_status = html.Span("Cobertura de coordenadas completa", className="coord-ok")
 
-    tendencia = db.get_tendencia_semana(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+    if fisico and hay_seccion:
+        tendencia = db.get_tendencia_semana_fisico(tienda, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+    else:
+        tendencia = db.get_tendencia_semana(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
     fig_trend = _figura_tendencia(tendencia, semana_sel)
 
     if len(pasillos):
-        pasillos = pasillos.copy()
-        pasillos["venta_por_rack"] = pasillos["venta"] / pasillos["racks"].replace(0, pd.NA)
+        pasillos = pasillos.copy(); pasillos["venta_por_rack"] = pasillos["venta"] / pasillos["racks"].replace(0, pd.NA)
     if len(racks):
-        racks = racks.copy()
-        racks["venta_por_sku"] = racks["venta"] / racks["skus"].replace(0, pd.NA)
-
+        racks = racks.copy(); racks["venta_por_sku"] = racks["venta"] / racks["skus"].replace(0, pd.NA)
+    venta_col = "Venta física" if fisico else "Venta atribuida"
     cols_pasillo = [
-        {"name": "Pasillo", "id": "pasillo"},
-        {"name": "Racks", "id": "racks", "type": "numeric", "format": NUM_FMT},
+        {"name": "Pasillo", "id": "pasillo"}, {"name": "Racks", "id": "racks", "type": "numeric", "format": NUM_FMT},
         {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
-        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": venta_col, "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Venta / rack", "id": "venta_por_rack", "type": "numeric", "format": MONEY_FMT},
     ]
     cols_rack = [
         {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
         {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
-        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": venta_col, "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Unidades", "id": "unidades", "type": "numeric", "format": NUM_FMT},
     ]
     prod_cols = [
         {"name": "SKU", "id": "cod_rapido"}, {"name": "Producto", "id": "descripcion"},
         {"name": "Categoría", "id": "categoria"}, {"name": "Familia", "id": "familia"},
-        {"name": "Marca", "id": "marca"}, {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
+        {"name": "Marca", "id": "marca"}, {"name": "Stock hoy", "id": "stock", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Cantidad", "id": "cantidad", "type": "numeric", "format": NUM_FMT},
     ]
@@ -821,18 +871,15 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
             html.Div([html.Strong(int(counts.get("Media", 0))), html.Span("prioridad media")], className="mini-stat"),
             html.Div([html.Strong(sinventa_count), html.Span("total sin venta")], className="mini-stat"),
         ], className="mini-stat-grid opportunity-stats")
-
     sinventa_cols = [
         {"name": "Prioridad", "id": "prioridad"}, {"name": "SKU", "id": "cod_rapido"},
         {"name": "Producto", "id": "descripcion"}, {"name": "Categoría", "id": "categoria"},
-        {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
-        {"name": "Marca", "id": "marca"}, {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
+        {"name": "Pasillo actual", "id": "pasillo"}, {"name": "Rack actual", "id": "rack"},
+        {"name": "Marca", "id": "marca"}, {"name": "Stock hoy", "id": "stock", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta AA", "id": "venta_anio_anterior", "type": "numeric", "format": MONEY_FMT},
         {"name": "Acción", "id": "accion"}, {"name": "Por qué", "id": "motivo"},
     ]
-
     comp_cards = _comparativo_cards(db.get_comparativo_anio(tienda))
-
     return (
         header, margen_status, kpis,
         fig_map, coord_status, fig_trend,
@@ -844,7 +891,6 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         opp_summary, clean_records(acciones_prod), sinventa_cols,
         comp_cards,
     )
-
 
 # =========================
 # Diagnóstico de selección
@@ -865,106 +911,160 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
     mes_sel = mes if modo == "Mes" else None
     semana_sel = semana if modo == "Semana" else None
+    ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
+    fisico = bool(ctx.get("cubierto"))
+
     if not seleccion:
-        acciones = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
-        accionables = acciones[acciones["accion"] != "Mantener"] if not acciones.empty else acciones
-        if len(accionables):
-            top = accionables.iloc[0]
-            return html.Div([
-                html.Div("Sin sección seleccionada", className="diagnostic-kicker"),
-                html.H3("Empieza por la primera acción", className="diagnostic-title"),
-                html.P(f"Rack {top['rack']}: {top['accion']}. {top['motivo']}", className="diagnostic-text"),
-                html.Div("Puedes hacer clic en ese rack en la tabla de acciones o directamente sobre el plano.", className="diagnostic-hint"),
-            ])
+        if fisico:
+            acciones = db.get_acciones_rack_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
+            accionables = acciones[acciones["accion"] != "Mantener"] if not acciones.empty else acciones
+            if len(accionables):
+                top = accionables.iloc[0]
+                return html.Div([
+                    html.Div("Sin sección seleccionada", className="diagnostic-kicker"),
+                    html.H3("Empieza por la primera señal física", className="diagnostic-title"),
+                    html.P(f"Rack {top['rack']}: {top['accion']}. {top['motivo']}", className="diagnostic-text"),
+                    html.Div("Haz clic en el rack de la tabla o del plano para separar desempeño físico y surtido vigente.", className="diagnostic-hint"),
+                ])
         return html.Div([
             html.Div("Sin sección seleccionada", className="diagnostic-kicker"),
             html.H3("Explora un rack", className="diagnostic-title"),
-            html.P("Haz clic en el mapa para ver KPIs, tendencia y una recomendación explicada.", className="diagnostic-text"),
+            html.P("Haz clic en el mapa. La ficha te indicará explícitamente si estás viendo historia física real o una vista atribuida al surtido actual.", className="diagnostic-text"),
         ])
 
     pasillo_f = seleccion["clave"] if seleccion.get("nivel") == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion.get("nivel") == "rack" else None
-    resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                     pasillo=pasillo_f, rack=rack_f)
-
     title = f"Rack {rack_f}" if rack_f else f"Pasillo {pasillo_f}"
     surtido = db.get_surtido_seccion(tienda, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+
+    if fisico:
+        resumen = db.get_resumen_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                        pasillo=pasillo_f, rack=rack_f) or {}
+        basis = html.Div([
+            html.Span("Desempeño físico", className="mode-pill mode-pill-good"),
+            html.Span("La venta se asigna al rack/pasillo donde el SKU estaba realmente en la fecha de la venta."),
+        ], className="diagnostic-basis diagnostic-basis-good")
+        var_label = "Variación física"
+        sold_label = "SKU vendidos aquí"
+    else:
+        resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                         pasillo=pasillo_f, rack=rack_f)
+        basis = html.Div([
+            html.Span("Surtido actual", className="mode-pill"),
+            html.Span("No existe ubicación física histórica completa para este período. La venta se atribuye al rack donde cada SKU está hoy."),
+        ], className="diagnostic-basis")
+        var_label = "Variación del surtido actual"
+        sold_label = "SKU con venta del surtido"
+
     metrics = html.Div([
-        html.Div([label_with_tip("Venta del período", "Suma de venta de los SKU de esta sección que cumplen el período y filtros activos."), html.Strong(fmt_money_short(resumen.get("venta")))]),
-        html.Div([label_with_tip("Variación de venta", "(Venta del período - venta comparable) / venta comparable × 100. Debajo se indica exactamente cuál fue el período comparable."), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
-        html.Div([label_with_tip("SKU con venta", "Cantidad de códigos de producto distintos que registraron venta en esta sección durante el período seleccionado."), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
-        html.Div([label_with_tip("SKU asociados hoy", "Cantidad de SKU que el snapshot vigente de ubicación/surtido asocia hoy a este rack o pasillo, hayan vendido o no en el período."), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
-        html.Div([label_with_tip("Unidades vendidas", "Suma de la cantidad vendida de los SKU de esta sección en el período y filtros activos."), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
-        html.Div([label_with_tip("SKU con stock hoy", "Cantidad de SKU asociados hoy a la sección con stock disponible positivo en el snapshot vigente."), html.Strong(f"{int(surtido.get('skus_con_stock') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("Venta del período", "Con modo físico es la venta ocurrida realmente en esta sección. Con modo surtido actual es la venta de los SKU que hoy pertenecen a la sección."), html.Strong(fmt_money_short(resumen.get("venta")))]),
+        html.Div([label_with_tip(var_label, "En modo físico compara contra el período inmediatamente anterior dentro de la ventana disponible. En modo surtido actual no representa necesariamente el mismo espacio físico histórico."), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
+        html.Div([label_with_tip(sold_label, "Cantidad de códigos de producto distintos con venta en el universo mostrado."), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("SKU asociados hoy", "Productos que el snapshot vigente ubica hoy en este rack/pasillo, hayan vendido o no."), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
+        html.Div([label_with_tip("Unidades vendidas", "Cantidad vendida en el período y universo mostrado."), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
+        html.Div([label_with_tip("SKU con stock hoy", "SKU del surtido vigente en la sección con stock disponible positivo ahora."), html.Strong(f"{int(surtido.get('skus_con_stock') or 0):,}".replace(",", "."))]),
     ], className="diagnostic-metrics")
 
+    anomaly = None
+    if fisico and int(resumen.get("skus") or 0) > 0 and int(surtido.get("skus_asociados") or 0) == 0:
+        anomaly = html.Div([
+            html.Strong("El rack cambió desde el período analizado."),
+            html.Span(" Hay venta física histórica en este código, pero hoy no tiene SKU asociados. Puede ser cambio de planograma o codificación. No uses este caso para decidir el espacio actual sin validar."),
+        ], className="data-warning")
+
     if resumen.get("periodo_anterior"):
-        comparison_note = html.Div([
-            html.Strong("Comparación de la variación: "),
-            html.Span(f"venta del período seleccionado vs {resumen.get('periodo_anterior')} ({fmt_money_short(resumen.get('venta_anterior'))}).")
-        ], className="diagnostic-comparison")
-    else:
-        comparison_note = html.Div("No existe un período comparable con este nivel de filtro.", className="diagnostic-comparison")
-
-    acciones = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
-    if rack_f and not acciones.empty:
-        match = acciones[acciones["rack"] == rack_f]
-        if len(match):
-            r = match.iloc[0]
-            action_box = html.Div([
-                html.Div([html.Span(r["prioridad"], className=f"priority-pill priority-{r['prioridad'].lower()}"),
-                          html.Span(label_with_tip("Recomendación del período", "No usa margen. La regla compara el rack contra otros racks del mismo universo filtrado usando percentil de venta, variación, SKU con venta y venta por SKU."), className="diagnostic-kicker")], className="action-hero-top"),
-                html.H4(r["accion"], className="diagnostic-action"),
-                html.P(r["motivo"], className="diagnostic-text"),
-                html.P(r["recomendacion"], className="diagnostic-recommendation"),
-            ], className="diagnostic-action-box")
+        if fisico:
+            comparison_note = html.Div([
+                html.Strong("Comparación física: "),
+                html.Span(f"período seleccionado vs {resumen.get('periodo_anterior')} ({fmt_money_short(resumen.get('venta_anterior'))}). No usa 2025 porque INFSTOCK no conserva esa ubicación."),
+            ], className="diagnostic-comparison")
         else:
-            action_box = html.Div("No hay una recomendación específica para este rack con los filtros actuales.", className="empty-note")
-    elif pasillo_f and not acciones.empty:
-        sub = acciones[(acciones["pasillo"] == pasillo_f) & (acciones["accion"] != "Mantener")]
-        counts = sub["accion"].value_counts() if len(sub) else pd.Series(dtype=int)
-        action_box = html.Div([
-            html.Div("Acciones dentro del pasillo", className="diagnostic-kicker"),
-            html.P(", ".join(f"{k}: {v}" for k, v in counts.items()) if len(counts) else "Sin acciones urgentes en este pasillo.",
-                   className="diagnostic-text"),
-        ], className="diagnostic-action-box")
+            comparison_note = html.Div([
+                html.Strong("Comparación del surtido actual: "),
+                html.Span(f"venta atribuida a los productos que hoy están aquí vs {resumen.get('periodo_anterior')} ({fmt_money_short(resumen.get('venta_anterior'))}). No significa que el rack físico tuviera el mismo surtido entonces."),
+            ], className="diagnostic-comparison diagnostic-comparison-warn")
     else:
-        action_box = None
+        comparison_note = html.Div("No existe un período comparable válido con este nivel de filtro.", className="diagnostic-comparison")
 
-    categorias = db.get_categorias_seccion(
-        tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-        pasillo=pasillo_f, rack=rack_f, n=6,
-    )
-    if categorias is not None and not categorias.empty:
-        cat_rows = []
-        for r in categorias.itertuples():
-            cat_rows.append(html.Div([
-                html.Div([
-                    html.Strong(str(r.categoria), className="category-name"),
-                    html.Span(str(r.familia), className="category-family"),
-                ]),
-                html.Div([
-                    html.Strong(fmt_money_short(r.venta)),
-                    html.Span(f"{float(r.participacion_pct):.1f}% venta · {int(r.skus_con_venta)}/{int(r.skus_asociados)} SKU con venta"),
-                ], className="category-values"),
-            ], className="category-row"))
-        category_box = html.Div([
-            html.Div(label_with_tip("Categorías asociadas a esta sección", "Agrupa por categoría el surtido vigente asociado al rack/pasillo y suma la venta del período. La fracción SKU con venta / SKU asociados permite ver cuánta parte del surtido está aportando venta."), className="diagnostic-kicker"),
-            html.Div("Incluye el surtido vigente; la fracción indica SKU con venta / SKU asociados.", className="diagnostic-hint"),
-            *cat_rows,
-        ], className="diagnostic-category-box")
+    action_box = None
+    if fisico:
+        acciones = db.get_acciones_rack_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
+        if rack_f and not acciones.empty:
+            match = acciones[acciones["rack"] == rack_f]
+            if len(match):
+                r = match.iloc[0]
+                action_box = html.Div([
+                    html.Div([html.Span(r["prioridad"], className=f"priority-pill priority-{str(r['prioridad']).lower()}"),
+                              html.Span(label_with_tip("Recomendación física reciente", "Se basa en venta física del rack, posición relativa frente a otros racks y variación contra el período inmediatamente anterior. No usa margen ni comparación anual."), className="diagnostic-kicker")], className="action-hero-top"),
+                    html.H4(r["accion"], className="diagnostic-action"),
+                    html.P(r["motivo"], className="diagnostic-text"),
+                    html.P(r["recomendacion"], className="diagnostic-recommendation"),
+                ], className="diagnostic-action-box")
+        elif pasillo_f and not acciones.empty:
+            sub = acciones[(acciones["pasillo"] == pasillo_f) & (acciones["accion"] != "Mantener")]
+            counts = sub["accion"].value_counts() if len(sub) else pd.Series(dtype=int)
+            action_box = html.Div([
+                html.Div("Señales físicas dentro del pasillo", className="diagnostic-kicker"),
+                html.P(", ".join(f"{k}: {v}" for k, v in counts.items()) if len(counts) else "Sin señales urgentes en este pasillo.", className="diagnostic-text"),
+            ], className="diagnostic-action-box")
     else:
-        category_box = None
+        action_box = html.Div([
+            html.Strong("No se emite recomendación de espacio para este período."),
+            html.Span(" La composición del rack pudo ser distinta y no existe ubicación histórica suficiente para verificarlo."),
+        ], className="data-warning")
+
+    # 1) Qué está asociado HOY a la sección.
+    curcats = db.get_categorias_surtido_actual(tienda, filtros=filtros, pasillo=pasillo_f, rack=rack_f, n=6)
+    current_box = None
+    if curcats is not None and not curcats.empty:
+        rows = []
+        for r in curcats.itertuples():
+            rows.append(html.Div([
+                html.Div([html.Strong(str(r.categoria), className="category-name"), html.Span(str(r.familia), className="category-family")]),
+                html.Div([html.Strong(f"{int(r.skus_asociados)} SKU"), html.Span(f"{int(r.skus_con_stock)} con stock hoy")], className="category-values"),
+            ], className="category-row"))
+        current_box = html.Div([
+            html.Div(label_with_tip("Surtido vigente hoy", "Composición actual del rack/pasillo según el último snapshot de INFSTOCK. No intenta reconstruir el surtido del período histórico."), className="diagnostic-kicker"),
+            *rows,
+        ], className="diagnostic-category-box")
+
+    # 2) Qué categorías generaron venta en la sección durante el período.
+    sold_box = None
+    if fisico:
+        soldcats = db.get_categorias_venta_fisica(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                                  pasillo=pasillo_f, rack=rack_f, n=6)
+        sold_title = "Qué categorías vendieron físicamente aquí"
+        sold_tip = "Venta realmente ocurrida en esta sección dentro de la ventana de ubicación histórica. La categoría usa la clasificación vigente del SKU."
+    else:
+        soldcats = db.get_categorias_seccion(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                             pasillo=pasillo_f, rack=rack_f, n=6)
+        sold_title = "Venta de las categorías del surtido actual"
+        sold_tip = "Fuera de la ventana física, suma la venta histórica de los SKU que hoy están asociados a esta sección. No representa necesariamente el surtido histórico del rack."
+    if soldcats is not None and not soldcats.empty:
+        rows = []
+        for r in soldcats.itertuples():
+            pct = float(getattr(r, "participacion_pct", 0) or 0)
+            nsku = int(getattr(r, "skus_con_venta", 0) or 0)
+            rows.append(html.Div([
+                html.Div([html.Strong(str(r.categoria), className="category-name"), html.Span(str(r.familia), className="category-family")]),
+                html.Div([html.Strong(fmt_money_short(r.venta)), html.Span(f"{pct:.1f}% venta · {nsku} SKU con venta")], className="category-values"),
+            ], className="category-row"))
+        sold_box = html.Div([
+            html.Div(label_with_tip(sold_title, sold_tip), className="diagnostic-kicker"),
+            *rows,
+        ], className="diagnostic-category-box")
 
     return html.Div([
         html.Div("Sección seleccionada", className="diagnostic-kicker"),
         html.H3(title, className="diagnostic-title"),
+        basis,
+        anomaly,
         metrics,
         comparison_note,
         action_box,
-        category_box,
+        current_box,
+        sold_box,
     ])
-
 
 # =========================
 # Descargas
@@ -988,12 +1088,19 @@ def _descargar_detalle(_, tienda, modo, mes, semana, familia, categoria, clasifi
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
     pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
-    df = db.get_detalle_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
-                                  pasillo=pasillo_f, rack=rack_f)
+    ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
+    if (pasillo_f or rack_f) and ctx.get("cubierto"):
+        df = db.get_detalle_productos_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                             pasillo=pasillo_f, rack=rack_f)
+        modo_archivo = "fisico"
+    else:
+        df = db.get_detalle_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                      pasillo=pasillo_f, rack=rack_f)
+        modo_archivo = "surtido_actual"
     if df.empty:
         return dash.no_update
     sufijo = rack_f or pasillo_f or "tienda"
-    return dcc.send_data_frame(df.to_csv, f"detalle_racks_{tienda}_{sufijo}_{anio}.csv",
+    return dcc.send_data_frame(df.to_csv, f"detalle_{modo_archivo}_{tienda}_{sufijo}_{anio}.csv",
                                index=False, sep=";", encoding="utf-8-sig")
 
 
@@ -1025,7 +1132,7 @@ def _descargar_sinventa(_, tienda, familia, categoria, clasificacion, zona_pck,
 # =========================
 # Figuras
 # =========================
-def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion):
+def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion, fisico=False):
     plano = db.get_plano(tienda)
     coords = db.get_coords(tienda, nivel=nivel_mapa)
     fig = go.Figure()
@@ -1039,8 +1146,11 @@ def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, selecci
         fig.update_layout(height=520, plot_bgcolor="#F8FAFC", paper_bgcolor="rgba(0,0,0,0)", margin=dict(l=0, r=0, t=5, b=0))
         return fig
 
-    venta_nivel = db.get_venta_por_nivel(tienda, anio, mes=mes_sel, semana=semana_sel,
-                                         filtros=filtros, nivel=nivel_mapa)
+    venta_nivel = (db.get_venta_por_nivel_fisico(tienda, anio, mes=mes_sel, semana=semana_sel,
+                                                  filtros=filtros, nivel=nivel_mapa)
+                   if fisico else
+                   db.get_venta_por_nivel(tienda, anio, mes=mes_sel, semana=semana_sel,
+                                          filtros=filtros, nivel=nivel_mapa))
     venta_map = venta_nivel.set_index("clave")["venta"].to_dict() if len(venta_nivel) else {}
     coords = coords.copy()
     coords["venta"] = pd.to_numeric(coords["clave"].map(venta_map), errors="coerce").fillna(0.0)
@@ -1059,7 +1169,7 @@ def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, selecci
         marker=dict(size=sizes, color=coords["venta"], colorscale="Blues", cmin=0, cmax=tope_color,
                     showscale=True, colorbar=dict(title="Venta", tickprefix="$", thickness=12, len=.55),
                     line=dict(width=1.2, color="white"), opacity=.93),
-        text=[f"{nivel_mapa.capitalize()} {c}<br><b>{fmt_money(v)}</b>" for c, v in zip(coords["clave"], coords["venta"])],
+        text=[f"{nivel_mapa.capitalize()} {c}<br>{'Venta física' if fisico else 'Venta atribuida al surtido actual'}<br><b>{fmt_money(v)}</b>" for c, v in zip(coords["clave"], coords["venta"])],
         hoverinfo="text",
     ))
 

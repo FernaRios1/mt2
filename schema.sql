@@ -129,3 +129,31 @@ ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS pasillo VARCHAR(20);
 ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS rack VARCHAR(20);
 CREATE INDEX IF NOT EXISTS idx_dpt_pasillo ON dim_producto_tienda (cod_tienda, pasillo);
 CREATE INDEX IF NOT EXISTS idx_dpt_rack ON dim_producto_tienda (cod_tienda, rack);
+
+-- V6: venta atribuida a la ubicación física que tenía el SKU en la fecha de venta.
+-- Se mantiene solo para la ventana que todavía existe en INFSTOCK (aprox. 3 meses).
+CREATE TABLE IF NOT EXISTS fact_venta_rack_dia (
+    cod_tienda   VARCHAR(10) NOT NULL REFERENCES dim_tienda(cod_tienda),
+    fecha        DATE NOT NULL,
+    anio         SMALLINT NOT NULL,
+    mes          SMALLINT NOT NULL,
+    semana       SMALLINT NOT NULL,
+    pasillo      VARCHAR(20) NOT NULL,
+    rack         VARCHAR(20) NOT NULL DEFAULT '',
+    cod_rapido   VARCHAR(30) NOT NULL,
+    venta        NUMERIC(14,2) NOT NULL DEFAULT 0,
+    cantidad     NUMERIC(14,2) NOT NULL DEFAULT 0,
+    PRIMARY KEY (cod_tienda, fecha, pasillo, rack, cod_rapido)
+);
+CREATE INDEX IF NOT EXISTS idx_fvrd_tienda_fecha ON fact_venta_rack_dia (cod_tienda, fecha);
+CREATE INDEX IF NOT EXISTS idx_fvrd_tienda_rack ON fact_venta_rack_dia (cod_tienda, rack, fecha);
+CREATE INDEX IF NOT EXISTS idx_fvrd_tienda_pasillo ON fact_venta_rack_dia (cod_tienda, pasillo, fecha);
+CREATE INDEX IF NOT EXISTS idx_fvrd_sku ON fact_venta_rack_dia (cod_tienda, cod_rapido, fecha);
+
+CREATE TABLE IF NOT EXISTS sync_ubicacion_fisica (
+    cod_tienda          VARCHAR(10) PRIMARY KEY REFERENCES dim_tienda(cod_tienda),
+    fecha_desde         DATE,
+    fecha_hasta         DATE,
+    cobertura_venta_pct NUMERIC(7,4),
+    actualizado         TIMESTAMP DEFAULT now()
+);

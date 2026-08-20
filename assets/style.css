@@ -703,3 +703,87 @@ a { color: inherit; }
     border-top: 0;
   }
 }
+
+/* ==========================================================
+   V6 — contraste de filtros + estados de calidad de datos
+   ========================================================== */
+/* Los dropdowns del sidebar pasan a fondo oscuro. Esto evita el problema de
+   texto blanco sobre fondo blanco que algunas versiones de Dash/React Select
+   estaban aplicando pese a los overrides anteriores. */
+.sidebar .Select-control,
+.sidebar .Select__control,
+.sidebar .dash-dropdown,
+.sidebar .dash-dropdown .Select-control {
+  background: #182235 !important;
+  background-color: #182235 !important;
+  border-color: #475569 !important;
+  color: #f8fafc !important;
+  box-shadow: none !important;
+}
+.sidebar .Select-placeholder,
+.sidebar .Select-value-label,
+.sidebar .Select--single > .Select-control .Select-value,
+.sidebar .Select--single > .Select-control .Select-value .Select-value-label,
+.sidebar .Select-input,
+.sidebar .Select-input > input,
+.sidebar .Select__single-value,
+.sidebar .Select__placeholder,
+.sidebar [class*="singleValue"],
+.sidebar [class*="placeholder"] {
+  color: #f8fafc !important;
+  opacity: 1 !important;
+  -webkit-text-fill-color: #f8fafc !important;
+}
+.sidebar .Select-value {
+  background: transparent !important;
+  border: none !important;
+  color: #f8fafc !important;
+}
+.sidebar .Select-value-icon { color: #cbd5e1 !important; border-right-color: #475569 !important; }
+.sidebar .Select-arrow { border-top-color: #e2e8f0 !important; }
+.sidebar .is-open > .Select-control .Select-arrow { border-bottom-color: #e2e8f0 !important; border-top-color: transparent !important; }
+.sidebar .Select-menu-outer,
+.sidebar .Select-menu,
+.sidebar .Select__menu,
+.sidebar [class*="menu"] {
+  background: #ffffff !important;
+  color: #0f172a !important;
+}
+.sidebar .VirtualizedSelectOption,
+.sidebar .VirtualizedSelectFocusedOption,
+.sidebar .Select__option,
+.sidebar [class*="option"] { color: #0f172a !important; }
+
+.mode-banner-stack { display: grid; gap: 8px; margin-bottom: 14px; }
+.mode-banner-stack .mode-banner { margin-bottom: 0; }
+.mode-banner-good { border-color: #a7f3d0; background: #f0fdf4; color: #065f46; }
+.mode-banner-neutral { border-color: #e2e8f0; background: #f8fafc; color: #475569; }
+
+.diagnostic-basis {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.diagnostic-basis-good { border-color: #a7f3d0; background: #f0fdf4; color: #065f46; }
+
+.data-warning {
+  margin: 10px 0;
+  padding: 10px 11px;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  background: #fff1f2;
+  color: #9f1239;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.diagnostic-comparison-warn { border-color: #fed7aa !important; background: #fff7ed !important; color: #9a3412 !important; }
+
+.priority-info { background: #e2e8f0 !important; color: #475569 !important; }

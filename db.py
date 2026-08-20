@@ -2,6 +2,8 @@
 import os
 import io
 import functools
+import datetime
+import calendar
 import pandas as pd
 import psycopg2
 import psycopg2.extras
@@ -833,16 +835,17 @@ def get_top_combos(cod_tienda, n=30, orden="boletas", pasillo=None, rack=None):
     where = "cod_tienda=%(t)s"
     params = {"t": cod_tienda, "n": n}
     if pasillo or rack:
-        # combos limitados a productos que aparecen en esa sección del mapa
-        cond = "f.pasillo = %(pasillo)s" if pasillo else "f.rack = %(rack)s"
+        # V6: al seleccionar una sección, cross-sell se acota al SURTIDO VIGENTE
+        # de esa sección. No usa la ubicación histórica para no mezclar conceptos.
+        cond = "d.pasillo = %(pasillo)s" if pasillo else "d.rack = %(rack)s"
         if pasillo:
             params["pasillo"] = pasillo
         if rack:
             params["rack"] = rack
-        where += (f" AND (sku_a IN (SELECT DISTINCT cod_rapido FROM fact_venta_semana f "
-                  f"WHERE f.cod_tienda=%(t)s AND {cond}) "
-                  f"OR sku_b IN (SELECT DISTINCT cod_rapido FROM fact_venta_semana f "
-                  f"WHERE f.cod_tienda=%(t)s AND {cond}))")
+        where += (f" AND (sku_a IN (SELECT DISTINCT cod_rapido FROM dim_producto_tienda d "
+                  f"WHERE d.cod_tienda=%(t)s AND {cond}) "
+                  f"OR sku_b IN (SELECT DISTINCT cod_rapido FROM dim_producto_tienda d "
+                  f"WHERE d.cod_tienda=%(t)s AND {cond}))")
     return _df(
         f"SELECT desc_a, desc_b, boletas, soporte, confianza_a_b, lift FROM fact_cross_sell "
         f"WHERE {where} ORDER BY {col} DESC LIMIT %(n)s", params)
@@ -906,3 +909,365 @@ def tiendas_con_plano():
     with get_conn() as cn, cn.cursor() as cur:
         cur.execute("SELECT cod_tienda FROM dim_plano")
         return [r[0] for r in cur.fetchall()]
+
+
+# ============================================================================
+# V6 — análisis físico reciente vs surtido vigente
+# ============================================================================
+_JOIN_FISICO = (
+    "FROM fact_venta_rack_dia f JOIN dim_producto_tienda d "
+    "ON d.cod_tienda=f.cod_tienda AND d.cod_rapido=f.cod_rapido"
+)
+
+
+def _rango_periodo(anio, mes=None, semana=None):
+    """Rango calendario teórico del período seleccionado."""
+    anio = int(anio)
+    if semana:
+        ini = datetime.date.fromisocalendar(anio, int(semana), 1)
+        return ini, ini + datetime.timedelta(days=6)
+    if mes:
+        mes = int(mes)
+        ini = datetime.date(anio, mes, 1)
+        fin = datetime.date(anio, mes, calendar.monthrange(anio, mes)[1])
+        return ini, fin
+    return datetime.date(anio, 1, 1), datetime.date(anio, 12, 31)
+
+
+def get_contexto_ubicacion_fisica(cod_tienda, anio, mes=None, semana=None):
+    """Indica si el período está cubierto por la ubicación física histórica.
+
+    INFSTOCK conserva una ventana corta (aprox. 3 meses). Para el mes/semana
+    actual, el fin del período se recorta al último día realmente cargado.
+    El modo Año nunca se marca como físico porque no existe cobertura anual.
+    """
+    try:
+        d = _df(
+            "SELECT fecha_desde AS desde, fecha_hasta AS hasta, cobertura_venta_pct "
+            "FROM sync_ubicacion_fisica WHERE cod_tienda=%(t)s", {"t": cod_tienda}
+        )
+        if d.empty:
+            d = _df(
+                "SELECT MIN(fecha) AS desde, MAX(fecha) AS hasta, NULL::numeric AS cobertura_venta_pct "
+                "FROM fact_venta_rack_dia WHERE cod_tienda=%(t)s", {"t": cod_tienda}
+            )
+        d = d.iloc[0]
+    except Exception:
+        return {"cubierto": False, "desde": None, "hasta": None, "cobertura_venta_pct": None,
+                "periodo_desde": None, "periodo_hasta": None,
+                "motivo": "Aún no se ha cargado el historial físico reciente."}
+    if pd.isna(d.get("desde")) or pd.isna(d.get("hasta")):
+        return {"cubierto": False, "desde": None, "hasta": None, "cobertura_venta_pct": None,
+                "periodo_desde": None, "periodo_hasta": None,
+                "motivo": "Aún no se ha cargado el historial físico reciente."}
+
+    desde = pd.to_datetime(d["desde"]).date()
+    hasta = pd.to_datetime(d["hasta"]).date()
+    ini, fin_teorico = _rango_periodo(anio, mes, semana)
+    fin = min(fin_teorico, hasta)
+    es_anio = not mes and not semana
+    cubierto = (not es_anio) and ini >= desde and ini <= fin and fin <= hasta
+    if es_anio:
+        motivo = "La ubicación física solo existe para la ventana reciente; el año completo no es comparable por rack físico."
+    elif ini < desde:
+        motivo = f"El período comienza antes del historial físico disponible ({desde:%d/%m/%Y})."
+    elif ini > hasta:
+        motivo = f"El período es posterior al último historial físico disponible ({hasta:%d/%m/%Y})."
+    else:
+        motivo = "Período cubierto por el historial físico disponible."
+    cov = d.get("cobertura_venta_pct") if hasattr(d, "get") else None
+    cov = None if cov is None or pd.isna(cov) else float(cov)
+    return {"cubierto": bool(cubierto), "desde": desde, "hasta": hasta, "cobertura_venta_pct": cov,
+            "periodo_desde": ini, "periodo_hasta": fin, "motivo": motivo}
+
+
+def _filtros_dim(filtros, alias="d"):
+    cond, params = [], {}
+    for key, col in FILTER_COLS.items():
+        vals = (filtros or {}).get(key)
+        if vals:
+            col_only = col.split(".")[1]
+            cond.append(f"{alias}.{col_only} = ANY(%({key})s)")
+            params[key] = list(vals)
+    return cond, params
+
+
+def _where_fisico(cod_tienda, fecha_ini, fecha_fin, filtros=None, pasillo=None, rack=None):
+    where = ["f.cod_tienda=%(t)s", "f.fecha >= %(fi)s", "f.fecha <= %(ff)s"]
+    params = {"t": cod_tienda, "fi": fecha_ini, "ff": fecha_fin}
+    extra, fp = _filtros_dim(filtros, "d")
+    where += extra
+    params.update(fp)
+    if pasillo:
+        where.append("f.pasillo=%(pasillo)s")
+        params["pasillo"] = pasillo
+    if rack:
+        where.append("f.rack=%(rack)s")
+        params["rack"] = rack
+    return " AND ".join(where), params
+
+
+def _rango_anterior_fisico(ctx, mes=None, semana=None):
+    """Período inmediatamente anterior, con el mismo número de días si el actual es parcial."""
+    if not ctx or not ctx.get("cubierto"):
+        return None
+    ini, fin = ctx["periodo_desde"], ctx["periodo_hasta"]
+    dias = (fin - ini).days + 1
+    if semana:
+        prev_ini = ini - datetime.timedelta(days=7)
+        prev_fin = prev_ini + datetime.timedelta(days=dias - 1)
+    elif mes:
+        if ini.month == 1:
+            py, pm = ini.year - 1, 12
+        else:
+            py, pm = ini.year, ini.month - 1
+        prev_ini = datetime.date(py, pm, 1)
+        prev_fin = min(prev_ini + datetime.timedelta(days=dias - 1),
+                       datetime.date(py, pm, calendar.monthrange(py, pm)[1]))
+    else:
+        return None
+    if prev_ini < ctx["desde"] or prev_fin > ctx["hasta"]:
+        return None
+    return prev_ini, prev_fin
+
+
+def get_resumen_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return None
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    cur = _df(
+        f"SELECT COALESCE(SUM(f.venta),0) AS venta, COALESCE(SUM(f.cantidad),0) AS unidades, "
+        f"COUNT(DISTINCT f.pasillo) AS pasillos, COUNT(DISTINCT f.rack) AS racks, "
+        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where}", params
+    ).iloc[0].to_dict()
+    prev = _rango_anterior_fisico(ctx, mes, semana)
+    prev_venta = None
+    prev_label = None
+    if prev:
+        wp, pp = _where_fisico(cod_tienda, prev[0], prev[1], filtros, pasillo, rack)
+        pv = _df(f"SELECT COALESCE(SUM(f.venta),0) AS venta {_JOIN_FISICO} WHERE {wp}", pp).iloc[0]["venta"]
+        prev_venta = float(pv or 0)
+        if semana:
+            prev_label = f"Semana anterior ({prev[0]:%d/%m}–{prev[1]:%d/%m})"
+        else:
+            prev_label = f"Período anterior ({prev[0]:%d/%m}–{prev[1]:%d/%m})"
+    cur["venta_anterior"] = prev_venta
+    cur["periodo_anterior"] = prev_label
+    cur["variacion_pct"] = ((float(cur["venta"]) - prev_venta) / prev_venta * 100) if prev_venta not in (None, 0) else None
+    cur["contexto_fisico"] = ctx
+    return cur
+
+
+def get_pasillo_resumen_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    return _df(
+        f"SELECT f.pasillo, SUM(f.venta) AS venta, SUM(f.cantidad) AS unidades, "
+        f"COUNT(DISTINCT f.rack) AS racks, COUNT(DISTINCT f.cod_rapido) AS skus "
+        f"{_JOIN_FISICO} WHERE {where} GROUP BY f.pasillo ORDER BY venta DESC", params)
+
+
+def get_rack_detalle_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    return _df(
+        f"SELECT f.pasillo, f.rack, SUM(f.venta) AS venta, SUM(f.cantidad) AS unidades, "
+        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where} "
+        f"GROUP BY f.pasillo, f.rack ORDER BY venta DESC", params)
+
+
+def get_venta_por_nivel_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, nivel="pasillo"):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame(columns=["clave", "venta"])
+    if nivel not in ("pasillo", "rack"):
+        nivel = "pasillo"
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros)
+    return _df(f"SELECT f.{nivel} AS clave, SUM(f.venta) AS venta {_JOIN_FISICO} WHERE {where} GROUP BY f.{nivel}", params)
+
+
+def get_top_productos_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None,
+                              pasillo=None, rack=None, n=50, ascendente=False):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    params["n"] = n
+    orden = "ASC" if ascendente else "DESC"
+    having = "HAVING SUM(f.venta) > 0" if ascendente else ""
+    return _df(
+        f"SELECT f.cod_rapido, d.descripcion, d.marca, d.familia, d.categoria, d.responsable_linea, "
+        f"CASE d.maneja_stock WHEN 'S' THEN 'Sí' WHEN 'N' THEN 'No' ELSE d.maneja_stock END AS maneja_stock, "
+        f"d.stock, SUM(f.venta) AS venta, SUM(f.cantidad) AS cantidad {_JOIN_FISICO} WHERE {where} "
+        f"GROUP BY f.cod_rapido,d.descripcion,d.marca,d.familia,d.categoria,d.responsable_linea,d.maneja_stock,d.stock "
+        f"{having} ORDER BY venta {orden} LIMIT %(n)s", params)
+
+
+def get_treemap_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    return _df(
+        f"SELECT COALESCE(d.familia,'(sin familia)') AS familia, "
+        f"COALESCE(d.responsable_linea,'(sin jefe de línea)') AS jefe_linea, "
+        f"COALESCE(d.categoria,'(sin categoría)') AS categoria, SUM(f.venta) AS venta "
+        f"{_JOIN_FISICO} WHERE {where} AND f.venta > 0 "
+        f"GROUP BY d.familia,d.responsable_linea,d.categoria", params)
+
+
+def get_tendencia_semana_fisico(cod_tienda, filtros=None, pasillo=None, rack=None):
+    try:
+        rango = _df("SELECT MIN(fecha) desde, MAX(fecha) hasta FROM fact_venta_rack_dia WHERE cod_tienda=%(t)s",
+                    {"t": cod_tienda}).iloc[0]
+    except Exception:
+        return pd.DataFrame()
+    if pd.isna(rango["desde"]) or pd.isna(rango["hasta"]):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, pd.to_datetime(rango["desde"]).date(),
+                                   pd.to_datetime(rango["hasta"]).date(), filtros, pasillo, rack)
+    return _df(f"SELECT f.anio, f.semana, MIN(f.fecha) AS desde, MAX(f.fecha) AS hasta, SUM(f.venta) AS venta "
+               f"{_JOIN_FISICO} WHERE {where} GROUP BY f.anio,f.semana ORDER BY f.anio,f.semana", params)
+
+
+def get_acciones_rack_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None):
+    """Recomendaciones de ESPACIO solo cuando la ubicación física está cubierta.
+
+    Compara contra el período inmediatamente anterior dentro de la misma ventana
+    física; nunca usa el año anterior porque INFSTOCK ya no conserva esa ubicación.
+    """
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros)
+    df = _df(
+        f"SELECT f.pasillo,f.rack,SUM(f.venta) AS venta,SUM(f.cantidad) AS unidades,"
+        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where} GROUP BY f.pasillo,f.rack", params)
+    if df.empty:
+        return df
+    for c in ("venta", "unidades", "skus"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["skus"] = df["skus"].astype(int)
+    df["venta_por_sku"] = df["venta"] / df["skus"].replace(0, pd.NA)
+    df["percentil_venta"] = df["venta"].rank(pct=True, method="average") * 100
+
+    prev = _rango_anterior_fisico(ctx, mes, semana)
+    if prev:
+        wp, pp = _where_fisico(cod_tienda, prev[0], prev[1], filtros)
+        ant = _df(f"SELECT f.pasillo,f.rack,SUM(f.venta) AS venta_anterior {_JOIN_FISICO} "
+                  f"WHERE {wp} GROUP BY f.pasillo,f.rack", pp)
+        df = df.merge(ant, on=["pasillo","rack"], how="left")
+        comp_label = f"{prev[0]:%d/%m}–{prev[1]:%d/%m}"
+    else:
+        df["venta_anterior"] = pd.NA
+        comp_label = None
+    df["venta_anterior"] = pd.to_numeric(df["venta_anterior"], errors="coerce")
+    df["variacion_pct"] = ((df["venta"] - df["venta_anterior"]) / df["venta_anterior"].replace(0, pd.NA)) * 100
+    df["comparacion_label"] = comp_label
+
+    # Surtido vigente por rack: sirve solo para detectar racks que cambiaron/desaparecieron.
+    dim_cond, dim_params = _filtros_dim(filtros, "d")
+    dim_where = ["d.cod_tienda=%(t)s"] + dim_cond
+    dim_params["t"] = cod_tienda
+    surt = _df("SELECT d.rack, COUNT(DISTINCT d.cod_rapido) AS skus_asociados_hoy "
+               f"FROM dim_producto_tienda d WHERE {' AND '.join(dim_where)} AND COALESCE(d.rack,'')<>'' GROUP BY d.rack",
+               dim_params)
+    df = df.merge(surt, on="rack", how="left")
+    df["skus_asociados_hoy"] = pd.to_numeric(df["skus_asociados_hoy"], errors="coerce").fillna(0).astype(int)
+
+    p30, p50, p70 = [float(df["venta"].quantile(q)) for q in (0.30,0.50,0.70)]
+    sku70 = float(df["skus"].quantile(0.70))
+
+    def clas(r):
+        if int(r["skus_asociados_hoy"]) == 0:
+            return ("Info", "Rack cambió",
+                    "Tuvo venta física en el período, pero hoy no tiene SKU asociados con ese código de rack.",
+                    "Validar cambio de planograma/codificación. No usar este caso para decidir espacio actual.")
+        var = r["variacion_pct"]
+        tiene = pd.notna(var)
+        if r["venta"] >= p70 and tiene and var <= -10:
+            return ("Alta", "Proteger desempeño", f"Rack top 30% en venta física, pero cae {abs(var):.1f}% vs período anterior.",
+                    "Revisar disponibilidad, precio y cambios recientes de surtido/exhibición.")
+        if r["venta"] <= p30 and tiene and var <= -10:
+            return ("Alta", "Revisar espacio", f"Rack de baja venta física y cae {abs(var):.1f}% vs período anterior.",
+                    "Revisar si el espacio y el mix actual siguen justificándose antes de reducir o mover.")
+        if r["venta"] >= p70 and tiene and var >= 10:
+            return ("Media", "Potenciar espacio", f"Rack top 30% en venta física y crece {var:.1f}% vs período anterior.",
+                    "Asegurar stock de líderes y evaluar mayor visibilidad si el layout lo permite.")
+        if r["venta"] <= p50 and r["skus"] >= sku70:
+            return ("Media", "Revisar mix", f"Vendieron {int(r['skus'])} SKU, pero el rack queda bajo la mediana de venta física.",
+                    "Revisar concentración del surtido; no implica automáticamente reducir espacio.")
+        return ("Baja", "Mantener", "Sin señal física fuerte de riesgo u oportunidad en la ventana comparable.",
+                "Monitorear; no hay acción urgente.")
+
+    cl = df.apply(clas, axis=1, result_type="expand")
+    cl.columns = ["prioridad","accion","motivo","recomendacion"]
+    df = pd.concat([df,cl],axis=1)
+    order = {"Alta":4,"Media":3,"Info":2,"Baja":1}
+    df["score_orden"] = df["prioridad"].map(order).fillna(0)*100 + df["percentil_venta"]
+    return df.sort_values(["score_orden","venta"], ascending=[False,False]).reset_index(drop=True)
+
+
+def get_categorias_surtido_actual(cod_tienda, filtros=None, pasillo=None, rack=None, n=8):
+    where = ["d.cod_tienda=%(t)s"]
+    params = {"t": cod_tienda, "n": n}
+    extra, fp = _filtros_dim(filtros, "d")
+    where += extra; params.update(fp)
+    if pasillo:
+        where.append("d.pasillo=%(pasillo)s"); params["pasillo"] = pasillo
+    if rack:
+        where.append("d.rack=%(rack)s"); params["rack"] = rack
+    return _df(
+        "SELECT COALESCE(d.familia,'(sin familia)') AS familia, COALESCE(d.categoria,'(sin categoría)') AS categoria, "
+        "COUNT(DISTINCT d.cod_rapido) AS skus_asociados, "
+        "COUNT(DISTINCT CASE WHEN COALESCE(d.stock,0)>0 THEN d.cod_rapido END) AS skus_con_stock, "
+        "COALESCE(SUM(d.stock),0) AS stock "
+        f"FROM dim_producto_tienda d WHERE {' AND '.join(where)} GROUP BY d.familia,d.categoria "
+        "ORDER BY skus_asociados DESC LIMIT %(n)s", params)
+
+
+def get_categorias_venta_fisica(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None, n=8):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto") or (not pasillo and not rack):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    params["n"] = n
+    df = _df(
+        f"SELECT COALESCE(d.familia,'(sin familia)') AS familia, COALESCE(d.categoria,'(sin categoría)') AS categoria, "
+        f"SUM(f.venta) AS venta, COUNT(DISTINCT f.cod_rapido) AS skus_con_venta {_JOIN_FISICO} WHERE {where} "
+        f"GROUP BY d.familia,d.categoria ORDER BY venta DESC LIMIT %(n)s", params)
+    if not df.empty:
+        total = float(pd.to_numeric(df["venta"], errors="coerce").fillna(0).sum()) or 1
+        df["participacion_pct"] = pd.to_numeric(df["venta"], errors="coerce").fillna(0)/total*100
+    return df
+
+
+def get_sin_coordenadas_fisico(cod_tienda, anio, mes=None, semana=None, nivel="pasillo"):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame(columns=["clave","venta"])
+    tabla = "dim_pasillo_coord" if nivel == "pasillo" else "dim_rack_coord"
+    col = "pasillo" if nivel == "pasillo" else "rack"
+    q = (f"SELECT f.{col} AS clave, SUM(f.venta) AS venta FROM fact_venta_rack_dia f "
+         f"WHERE f.cod_tienda=%(t)s AND f.fecha>=%(fi)s AND f.fecha<=%(ff)s AND COALESCE(f.{col},'')<>'' "
+         f"AND NOT EXISTS (SELECT 1 FROM {tabla} c WHERE c.cod_tienda=f.cod_tienda AND c.{col}=f.{col}) "
+         f"GROUP BY f.{col} ORDER BY venta DESC")
+    return _df(q, {"t":cod_tienda,"fi":ctx["periodo_desde"],"ff":ctx["periodo_hasta"]})
+
+
+def get_detalle_productos_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
+    ctx = get_contexto_ubicacion_fisica(cod_tienda, anio, mes, semana)
+    if not ctx.get("cubierto"):
+        return pd.DataFrame()
+    where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
+    return _df(
+        f"SELECT f.pasillo,f.rack,f.cod_rapido,d.descripcion,d.marca,d.familia,d.subfamilia,d.categoria,"
+        f"d.clasificacion,d.responsable_linea,d.zona_pck,d.maneja_stock,d.stock,"
+        f"SUM(f.venta) AS venta,SUM(f.cantidad) AS cantidad {_JOIN_FISICO} WHERE {where} "
+        f"GROUP BY f.pasillo,f.rack,f.cod_rapido,d.descripcion,d.marca,d.familia,d.subfamilia,d.categoria,"
+        f"d.clasificacion,d.responsable_linea,d.zona_pck,d.maneja_stock,d.stock ORDER BY venta DESC", params)
