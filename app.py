@@ -179,7 +179,6 @@ sidebar = html.Aside([
 action_table = dash_table.DataTable(
     id="tabla-acciones-rack",
     **BASE_TABLE,
-    page_size=8,
     style_data_conditional=ACTION_STYLE,
     cell_selectable=True,
 )
@@ -251,7 +250,7 @@ main = html.Main([
                 html.Div(className="tab-content", children=[
                     html.Div(id="oportunidades-resumen"),
                     html.Div("SKU con stock y sin venta", className="subblock-title"),
-                    dash_table.DataTable(id="tabla-sinventa", **BASE_TABLE, page_size=10,
+                    dash_table.DataTable(id="tabla-sinventa", **BASE_TABLE,
                                          style_data_conditional=ACTION_STYLE),
                     html.Hr(className="soft-hr"),
                     html.Div("Cross-sell y combos", className="subblock-title"),
@@ -264,11 +263,11 @@ main = html.Main([
                                                   {"label": "Mayor lift", "value": "lift"},
                                                   {"label": "Mayor confianza", "value": "confianza"}],
                                          value="boletas", clearable=False),
-                            dash_table.DataTable(id="tabla-combos", **BASE_TABLE, page_size=8),
+                            dash_table.DataTable(id="tabla-combos", **BASE_TABLE),
                         ], md=6),
                         dbc.Col([
                             dcc.Dropdown(id="combo-producto", placeholder="Buscar producto para ver qué se compra junto…"),
-                            dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE, page_size=8),
+                            dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE),
                         ], md=6),
                     ], className="g-3"),
                 ]),
