@@ -128,10 +128,12 @@ main = html.Div([
             dash_table.DataTable(id="tabla-baja", **TABLE_STYLE)]), md=6),
     ], className="g-3"),
 
-    section("Con stock, sin venta este período", [
+    section("Con stock, sin venta este año — acciones sugeridas", [
         html.Span("candidatos a cambiar", className="badge-bad"),
+        html.Div(id="acciones-resumen"),
         dash_table.DataTable(id="tabla-sinventa", **TABLE_STYLE),
-    ]),
+    ], subtitle="No respeta el filtro de mes/semana del sidebar (usa el año completo) ni el clic en el mapa "
+                "— porque un producto sin ninguna venta este año no tiene un pasillo conocido para ubicarlo."),
 
     section("Comparativo año a la fecha vs año anterior", [
         html.Div(id="comparativo-cards"),
@@ -342,6 +344,7 @@ def _seleccion_info(sel):
     Output("sin-coordenadas-panel", "children"),
     Output("tabla-top", "data"), Output("tabla-top", "columns"),
     Output("tabla-baja", "data"), Output("tabla-baja", "columns"),
+    Output("acciones-resumen", "children"),
     Output("tabla-sinventa", "data"), Output("tabla-sinventa", "columns"),
     Output("comparativo-cards", "children"),
     Input("f-tienda", "value"), Input("f-modo-periodo", "value"),
@@ -354,7 +357,7 @@ def _seleccion_info(sel):
 def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck,
                  responsable_linea, marca, maneja_sel, nivel_mapa_lbl, seleccion):
     if not tienda:
-        return [dash.no_update] * 20
+        return [dash.no_update] * 21
 
     mes_sel = mes if modo == "Mes" else None
     semana_sel = semana if modo == "Semana" else None
@@ -369,23 +372,20 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     tipo_tienda = tiendas.set_index("cod_tienda").loc[tienda, "tipo"]
     anio = 2026  # dataset actual -- si se agregan años futuros, calcular como max(meses.anio)
 
-    pasillos = db.get_pasillo_resumen(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
-    racks = db.get_rack_detalle(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
-
     pasillo_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "rack" else None
-    # si se filtró por rack, también acotamos el pasillo al que pertenece para las tablas de producto
-    pasillo_para_prod = pasillo_f
-    if rack_f and not racks.empty:
-        m = racks[racks["rack"] == rack_f]
-        if len(m):
-            pasillo_para_prod = None  # el rack ya identifica la seccion, no hace falta acotar pasillo tambien
+
+    pasillos = db.get_pasillo_resumen(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                       pasillo=pasillo_f, rack=rack_f)
+    racks = db.get_rack_detalle(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                 pasillo=pasillo_f, rack=rack_f)
 
     top = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
                                 pasillo=pasillo_f, rack=rack_f, n=50)
     baja = db.get_top_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
                                  pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
     sin_venta = db.get_sin_venta(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros, n=300)
+    acciones = db.get_acciones_producto(tienda, anio, filtros=filtros, n=300)
 
     periodo_txt = f"Semana {semana_sel}" if semana_sel else (f"Mes {mes_sel}/{anio}" if mes_sel else f"Año {anio}")
     n_filtros = sum(len(v) for v in filtros.values())
@@ -403,7 +403,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         dbc.Col(_kpi(FMT(pasillos["venta"].sum()) if len(pasillos) else "$0", "Venta del período"), md=3),
         dbc.Col(_kpi(str(int(pasillos["pasillo"].nunique())) if len(pasillos) else "0", "Pasillos con venta"), md=3),
         dbc.Col(_kpi(str(int(racks["rack"].nunique())) if len(racks) else "0", "Racks con venta"), md=3),
-        dbc.Col(_kpi(str(len(sin_venta)), "SKU con stock sin venta"), md=3),
+        dbc.Col(_kpi(str(len(acciones)), "SKU con stock sin venta"), md=3),
     ], className="g-3")
 
     margen_warn = None
@@ -419,7 +419,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     cols_rack = [{"name": n, "id": c} for n, c in
                  [("Pasillo", "pasillo"), ("Rack", "rack"), ("Venta", "venta"), ("Margen", "margen")]]
 
-    recom = db.get_recomendacion_pasillo(tienda)
+    recom = db.get_recomendacion_pasillo(tienda, pasillo=pasillo_f, rack=rack_f)
     if recom.empty:
         recom_resumen = html.Div("Sin datos suficientes para comparar años todavía.", className="section-subtitle")
         recom_data, recom_cols = [], []
@@ -436,7 +436,8 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
                        ("Venta año anterior", "venta_anio_anterior"), ("Variación %", "variacion_pct"),
                        ("Recomendación", "recomendacion")]]
 
-    tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
+    tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                           pasillo=pasillo_f, rack=rack_f)
     fig_tree = _figura_treemap(tree)
 
     sin_coord = db.get_sin_coordenadas(tienda, nivel=nivel_mapa)
@@ -458,7 +459,20 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     top_cols = _cols_prod([("Venta", "venta"), ("Cantidad", "cantidad")])
     baja_cols = _cols_prod([("Venta", "venta"), ("Cantidad", "cantidad")])
     sinventa_cols = [{"name": n, "id": c} for n, c in
-                      [("SKU", "cod_rapido"), ("Producto", "descripcion"), ("Marca", "marca"), ("Stock", "stock")]]
+                      [("SKU", "cod_rapido"), ("Producto", "descripcion"), ("Marca", "marca"),
+                       ("Stock", "stock"), ("Acción sugerida", "accion")]]
+
+    if acciones.empty:
+        acciones_resumen = html.Div("Sin productos en esta situación con los filtros actuales.",
+                                     className="section-subtitle")
+    else:
+        badge_class = {"Revisar": "badge-bad", "Mejorar visibilidad": "badge-neutral",
+                        "Candidato a liquidar": "badge-bad"}
+        counts = acciones["accion"].apply(lambda a: next((k for k in badge_class if a.startswith(k)), a)) \
+            .value_counts()
+        acciones_resumen = html.Div([
+            html.Span(f"{k}: {v}", className=badge_class.get(k, "badge-neutral")) for k, v in counts.items()
+        ], className="recom-badges")
 
     comp = db.get_comparativo_anio(tienda)
     comp_cards = _comparativo_cards(comp)
@@ -471,7 +485,8 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         fig_tree, sin_coord_panel,
         top.round(0).to_dict("records"), top_cols,
         baja.round(0).to_dict("records"), baja_cols,
-        sin_venta.round(0).to_dict("records"), sinventa_cols,
+        acciones_resumen,
+        acciones.round(0).to_dict("records"), sinventa_cols,
         comp_cards,
     )
 
@@ -577,11 +592,13 @@ def _comparativo_cards(comp):
 
 # ================= Cross-sell =================
 @app.callback(Output("tabla-combos", "data"), Output("tabla-combos", "columns"),
-              Input("f-tienda", "value"), Input("combo-orden", "value"))
-def _combos_top(tienda, orden):
+              Input("f-tienda", "value"), Input("combo-orden", "value"), Input("store-seleccion", "data"))
+def _combos_top(tienda, orden, seleccion):
     if not tienda:
         return [], []
-    df = db.get_top_combos(tienda, n=40, orden=orden)
+    pasillo_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion and seleccion["nivel"] == "rack" else None
+    df = db.get_top_combos(tienda, n=40, orden=orden, pasillo=pasillo_f, rack=rack_f)
     cols = [{"name": n, "id": c} for n, c in
             [("Producto A", "desc_a"), ("Producto B", "desc_b"), ("Boletas juntas", "boletas"),
              ("Soporte", "soporte"), ("Confianza", "confianza_a_b"), ("Lift", "lift")]]

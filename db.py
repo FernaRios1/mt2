@@ -172,15 +172,27 @@ def _where(cod_tienda, anio, mes, semana, filtros):
 _JOIN = "FROM fact_venta_semana f JOIN dim_producto_tienda d ON d.cod_tienda=f.cod_tienda AND d.cod_rapido=f.cod_rapido"
 
 
-def get_pasillo_resumen(cod_tienda, anio, mes=None, semana=None, filtros=None):
+def get_pasillo_resumen(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
     where, params = _where(cod_tienda, anio, mes, semana, filtros)
+    if pasillo:
+        where += " AND f.pasillo = %(pasillo)s"
+        params["pasillo"] = pasillo
+    if rack:
+        where += " AND f.rack = %(rack)s"
+        params["rack"] = rack
     q = (f"SELECT f.pasillo, SUM(f.venta) AS venta, SUM(f.margen) AS margen, COUNT(DISTINCT f.rack) AS racks "
          f"{_JOIN} WHERE {where} GROUP BY f.pasillo ORDER BY venta DESC")
     return _df(q, params)
 
 
-def get_rack_detalle(cod_tienda, anio, mes=None, semana=None, filtros=None):
+def get_rack_detalle(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
     where, params = _where(cod_tienda, anio, mes, semana, filtros)
+    if pasillo:
+        where += " AND f.pasillo = %(pasillo)s"
+        params["pasillo"] = pasillo
+    if rack:
+        where += " AND f.rack = %(rack)s"
+        params["rack"] = rack
     q = (f"SELECT f.pasillo, f.rack, SUM(f.venta) AS venta, SUM(f.margen) AS margen "
          f"{_JOIN} WHERE {where} GROUP BY f.pasillo, f.rack ORDER BY venta DESC")
     return _df(q, params)
@@ -228,10 +240,16 @@ def get_sin_venta(cod_tienda, anio, mes=None, semana=None, filtros=None, n=300):
     return _df(q, params)
 
 
-def get_recomendacion_pasillo(cod_tienda):
+def get_recomendacion_pasillo(cod_tienda, pasillo=None, rack=None):
     q = ("SELECT pasillo, rack, anio, SUM(venta) AS venta FROM fact_pasillo_rack_anio "
          "WHERE cod_tienda=%(t)s GROUP BY pasillo, rack, anio")
     df = _df(q, {"t": cod_tienda})
+    if df.empty:
+        return df
+    if pasillo:
+        df = df[df["pasillo"] == pasillo]
+    if rack:
+        df = df[df["rack"] == rack]
     if df.empty:
         return df
     anios = sorted(df["anio"].unique())
@@ -262,9 +280,15 @@ def get_recomendacion_pasillo(cod_tienda):
         .sort_values("venta", ascending=False)
 
 
-def get_treemap(cod_tienda, anio, mes=None, semana=None, filtros=None):
+def get_treemap(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=None, rack=None):
     """Familia > Jefe de línea > Categoría."""
     where, params = _where(cod_tienda, anio, mes, semana, filtros)
+    if pasillo:
+        where += " AND f.pasillo = %(pasillo)s"
+        params["pasillo"] = pasillo
+    if rack:
+        where += " AND f.rack = %(rack)s"
+        params["rack"] = rack
     q = (f"SELECT COALESCE(d.familia,'(sin familia)') AS familia, "
          f"COALESCE(d.responsable_linea,'(sin jefe de línea)') AS jefe_linea, "
          f"COALESCE(d.categoria,'(sin categoría)') AS categoria, SUM(f.venta) AS venta "
@@ -293,11 +317,94 @@ def get_comparativo_anio(cod_tienda):
     return df
 
 
-def get_top_combos(cod_tienda, n=30, orden="boletas"):
+def get_acciones_producto(cod_tienda, anio, filtros=None, n=300):
+    """Para cada producto con stock y sin venta este año, sugiere una acción
+    combinando 2 señales que ya existen en la base:
+      - ¿Vendía el año pasado y dejó de vender? (más urgente que 'nunca vendió')
+      - ¿El resto de su categoría vende bien o también está débil? Si el resto
+        de la categoría sí vende, el problema es puntual de ese SKU (visibilidad,
+        precio, exhibición) -- si toda la categoría vende poco, el problema es
+        de la categoría completa, no solo de este producto.
+    (Antes probé cruzar con cross-sell para sugerir "reubicar cerca de X", pero
+    un producto sin ninguna venta este año por definición no puede aparecer en
+    los pares de cross-sell -- que se calculan solo entre productos que sí se
+    vendieron juntos. Esa señal nunca disparaba, así que la reemplacé.)
+    """
+    filtro_extra = ""
+    params = {"t": cod_tienda, "a": anio, "n": n}
+    for key, col in FILTER_COLS.items():
+        vals = (filtros or {}).get(key)
+        if vals:
+            filtro_extra += f" AND d.{col.split('.')[1]} = ANY(%({key})s)"
+            params[key] = list(vals)
+
+    q = f"""
+    WITH sin_venta AS (
+        SELECT d.cod_rapido, d.descripcion, d.marca, d.stock, d.familia, d.categoria
+        FROM dim_producto_tienda d
+        WHERE d.cod_tienda = %(t)s AND d.maneja_stock = 'S' {filtro_extra}
+        AND NOT EXISTS (
+            SELECT 1 FROM fact_venta_semana f
+            WHERE f.cod_tienda = d.cod_tienda AND f.cod_rapido = d.cod_rapido
+              AND f.anio = %(a)s AND f.venta > 0
+        )
+    ),
+    historial AS (
+        SELECT cod_rapido,
+               MAX(CASE WHEN anio = %(a)s - 1 THEN venta ELSE 0 END) AS venta_anio_anterior
+        FROM fact_producto_anio WHERE cod_tienda = %(t)s
+        GROUP BY cod_rapido
+    ),
+    venta_categoria AS (
+        SELECT d.categoria, SUM(f.venta) AS venta_categoria
+        FROM fact_venta_semana f JOIN dim_producto_tienda d
+            ON d.cod_tienda = f.cod_tienda AND d.cod_rapido = f.cod_rapido
+        WHERE f.cod_tienda = %(t)s AND f.anio = %(a)s
+        GROUP BY d.categoria
+    )
+    SELECT sv.cod_rapido, sv.descripcion, sv.marca, sv.stock, sv.familia, sv.categoria,
+           COALESCE(h.venta_anio_anterior, 0) AS venta_anio_anterior,
+           COALESCE(vc.venta_categoria, 0) AS venta_categoria
+    FROM sin_venta sv
+    LEFT JOIN historial h ON h.cod_rapido = sv.cod_rapido
+    LEFT JOIN venta_categoria vc ON vc.categoria = sv.categoria
+    ORDER BY h.venta_anio_anterior DESC NULLS LAST, sv.stock DESC NULLS LAST
+    LIMIT %(n)s
+    """
+    df = _df(q, params)
+    if df.empty:
+        df["accion"] = []
+        return df
+
+    def _accion(row):
+        if row["venta_anio_anterior"] and row["venta_anio_anterior"] > 0:
+            return "Revisar — vendía el año pasado y dejó de vender"
+        if row["venta_categoria"] and row["venta_categoria"] > 0:
+            return "Mejorar visibilidad — el resto de su categoría sí vende"
+        return "Candidato a liquidar / reducir espacio (toda la categoría vende poco)"
+
+    df["accion"] = df.apply(_accion, axis=1)
+    return df
+
+
+def get_top_combos(cod_tienda, n=30, orden="boletas", pasillo=None, rack=None):
     col = {"boletas": "boletas", "lift": "lift", "confianza": "confianza_a_b"}.get(orden, "boletas")
+    where = "cod_tienda=%(t)s"
+    params = {"t": cod_tienda, "n": n}
+    if pasillo or rack:
+        # combos limitados a productos que aparecen en esa sección del mapa
+        cond = "f.pasillo = %(pasillo)s" if pasillo else "f.rack = %(rack)s"
+        if pasillo:
+            params["pasillo"] = pasillo
+        if rack:
+            params["rack"] = rack
+        where += (f" AND (sku_a IN (SELECT DISTINCT cod_rapido FROM fact_venta_semana f "
+                  f"WHERE f.cod_tienda=%(t)s AND {cond}) "
+                  f"OR sku_b IN (SELECT DISTINCT cod_rapido FROM fact_venta_semana f "
+                  f"WHERE f.cod_tienda=%(t)s AND {cond}))")
     return _df(
         f"SELECT desc_a, desc_b, boletas, soporte, confianza_a_b, lift FROM fact_cross_sell "
-        f"WHERE cod_tienda=%(t)s ORDER BY {col} DESC LIMIT %(n)s", {"t": cod_tienda, "n": n})
+        f"WHERE {where} ORDER BY {col} DESC LIMIT %(n)s", params)
 
 
 def get_productos_lista(cod_tienda):
