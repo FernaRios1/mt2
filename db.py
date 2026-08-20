@@ -438,7 +438,7 @@ def get_acciones_rack(cod_tienda, anio, mes=None, semana=None, filtros=None):
         if row["venta"] <= p50 and row["skus"] >= sku70:
             return ("Media", "Optimizar surtido",
                     f"{int(row['skus'])} SKU con venta bajo la mediana de la tienda.",
-                    "Concentrar exhibición en SKU que sí rotan y revisar duplicidad/variedad de baja contribución.")
+                    "Concentrar exhibición en SKU que sí rotan y revisar duplicidad/variedad de baja venta.")
         return ("Baja", "Mantener",
                 "Desempeño sin una señal fuerte de riesgo u oportunidad.",
                 "Sin acción urgente; monitorear tendencia y disponibilidad.")
@@ -601,6 +601,37 @@ def get_treemap(cod_tienda, anio, mes=None, semana=None, filtros=None, pasillo=N
          f"GROUP BY d.familia, d.responsable_linea, d.categoria")
     return _df(q, params)
 
+
+
+def get_surtido_seccion(cod_tienda, filtros=None, pasillo=None, rack=None):
+    """Resumen del surtido vigente de la sección, independiente de que haya vendido.
+
+    Usa la ubicación ACTUAL de dim_producto_tienda. Sirve para diferenciar
+    "SKU con venta" (hecho del período) de "SKU asociados hoy" (catálogo actual).
+    """
+    where = ["d.cod_tienda=%(t)s"]
+    params = {"t": cod_tienda}
+    for key, col in FILTER_COLS.items():
+        vals = (filtros or {}).get(key)
+        if vals:
+            where.append(f"{col} = ANY(%({key})s)")
+            params[key] = list(vals)
+    if pasillo:
+        where.append("d.pasillo=%(pasillo)s")
+        params["pasillo"] = pasillo
+    if rack:
+        where.append("d.rack=%(rack)s")
+        params["rack"] = rack
+    q = ("SELECT COUNT(DISTINCT d.cod_rapido) AS skus_asociados, "
+         "COUNT(DISTINCT CASE WHEN COALESCE(d.stock,0) > 0 THEN d.cod_rapido END) AS skus_con_stock "
+         f"FROM dim_producto_tienda d WHERE {' AND '.join(where)}")
+    df = _df(q, params)
+    if df.empty:
+        return {"skus_asociados": 0, "skus_con_stock": 0}
+    return {
+        "skus_asociados": int(df.iloc[0]["skus_asociados"] or 0),
+        "skus_con_stock": int(df.iloc[0]["skus_con_stock"] or 0),
+    }
 
 
 def get_categorias_seccion(cod_tienda, anio, mes=None, semana=None, filtros=None,

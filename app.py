@@ -238,16 +238,15 @@ main = html.Main([
                 ], className="g-3 tab-content"),
             ]),
             dcc.Tab(label="Productos", value="productos", className="detail-tab", selected_className="detail-tab-selected", children=[
-                dbc.Row([
-                    dbc.Col([
-                        html.Div("Productos que explican la venta", className="subblock-title"),
-                        dash_table.DataTable(id="tabla-top", **BASE_TABLE),
-                    ], md=6),
-                    dbc.Col([
-                        html.Div("Baja contribución con venta", className="subblock-title"),
-                        dash_table.DataTable(id="tabla-baja", **BASE_TABLE),
-                    ], md=6),
-                ], className="g-3 tab-content"),
+                html.Div([
+                    html.Div("Productos con mayor venta", className="subblock-title"),
+                    html.Div("Ordenados por venta del período seleccionado. No utiliza margen.", className="micro-help"),
+                    dash_table.DataTable(id="tabla-top", **BASE_TABLE),
+                    html.Hr(className="soft-hr"),
+                    html.Div("Productos con menor venta (pero sí vendieron)", className="subblock-title"),
+                    html.Div("Muestra los SKU con venta positiva más baja del período. No significa bajo margen ni pérdida.", className="micro-help"),
+                    dash_table.DataTable(id="tabla-baja", **BASE_TABLE),
+                ], className="tab-content product-tables-full"),
             ]),
             dcc.Tab(label="Categorías", value="categorias", className="detail-tab", selected_className="detail-tab-selected", children=[
                 html.Div([
@@ -265,11 +264,15 @@ main = html.Main([
                     html.Div("Cross-sell y combos", className="subblock-title"),
                     html.Div("Cross-sell se calcula con las boletas del año. Respeta la tienda y la sección seleccionada; el período mes/semana no recalcula los pares.",
                              className="section-subtitle"),
+                    html.Div([
+                        html.Strong("Cómo leerlo: "),
+                        html.Span("Boletas juntas = veces que ambos productos aparecen en la misma compra · Confianza = de las compras con A, qué % también lleva B · Afinidad (lift) > 1 = se compran juntos más de lo esperable; 1 = sin asociación especial; < 1 = menos de lo esperable."),
+                    ], className="metric-explainer"),
                     dbc.Row([
                         dbc.Col([
                             dcc.Dropdown(id="combo-orden",
                                          options=[{"label": "Más frecuentes", "value": "boletas"},
-                                                  {"label": "Mayor lift", "value": "lift"},
+                                                  {"label": "Mayor afinidad (lift)", "value": "lift"},
                                                   {"label": "Mayor confianza", "value": "confianza"}],
                                          value="boletas", clearable=False),
                             dash_table.DataTable(id="tabla-combos", **BASE_TABLE),
@@ -582,7 +585,7 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
         {"name": "Rack", "id": "rack"},
         {"name": "Venta período", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Variación", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Por qué", "id": "motivo"},
     ]
@@ -725,13 +728,13 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     cols_pasillo = [
         {"name": "Pasillo", "id": "pasillo"},
         {"name": "Racks", "id": "racks", "type": "numeric", "format": NUM_FMT},
-        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Venta / rack", "id": "venta_por_rack", "type": "numeric", "format": MONEY_FMT},
     ]
     cols_rack = [
         {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
-        {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
+        {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Unidades", "id": "unidades", "type": "numeric", "format": NUM_FMT},
@@ -820,12 +823,23 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
                                      pasillo=pasillo_f, rack=rack_f)
 
     title = f"Rack {rack_f}" if rack_f else f"Pasillo {pasillo_f}"
+    surtido = db.get_surtido_seccion(tienda, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
     metrics = html.Div([
         html.Div([html.Span("Venta"), html.Strong(fmt_money_short(resumen.get("venta")))]),
-        html.Div([html.Span("Variación"), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
-        html.Div([html.Span("SKUs"), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
-        html.Div([html.Span("Unidades"), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
+        html.Div([html.Span("Variación de venta"), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
+        html.Div([html.Span("SKU con venta"), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
+        html.Div([html.Span("SKU asociados hoy"), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
+        html.Div([html.Span("Unidades vendidas"), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
+        html.Div([html.Span("SKU con stock hoy"), html.Strong(f"{int(surtido.get('skus_con_stock') or 0):,}".replace(",", "."))]),
     ], className="diagnostic-metrics")
+
+    if resumen.get("periodo_anterior"):
+        comparison_note = html.Div([
+            html.Strong("Comparación de la variación: "),
+            html.Span(f"venta del período seleccionado vs {resumen.get('periodo_anterior')} ({fmt_money_short(resumen.get('venta_anterior'))}).")
+        ], className="diagnostic-comparison")
+    else:
+        comparison_note = html.Div("No existe un período comparable con este nivel de filtro.", className="diagnostic-comparison")
 
     acciones = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
     if rack_f and not acciones.empty:
@@ -881,6 +895,7 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
         html.Div("Sección seleccionada", className="diagnostic-kicker"),
         html.H3(title, className="diagnostic-title"),
         metrics,
+        comparison_note,
         action_box,
         category_box,
     ])
@@ -1098,12 +1113,16 @@ def _combos_top(tienda, orden, seleccion):
     pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
     df = db.get_top_combos(tienda, n=40, orden=orden, pasillo=pasillo_f, rack=rack_f)
+    if not df.empty:
+        df = df.copy()
+        df["soporte_pct"] = pd.to_numeric(df["soporte"], errors="coerce") * 100
+        df["confianza_pct"] = pd.to_numeric(df["confianza_a_b"], errors="coerce") * 100
     cols = [
         {"name": "Producto A", "id": "desc_a"}, {"name": "Producto B", "id": "desc_b"},
         {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
-        {"name": "Soporte", "id": "soporte", "type": "numeric"},
-        {"name": "Confianza", "id": "confianza_a_b", "type": "numeric"},
-        {"name": "Lift", "id": "lift", "type": "numeric"},
+        {"name": "% boletas con ambos", "id": "soporte_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "% de A que también lleva B", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad (lift)", "id": "lift", "type": "numeric"},
     ]
     return clean_records(df), cols
 
@@ -1122,11 +1141,14 @@ def _combos_producto(tienda, sku):
     if not tienda or not sku:
         return [], []
     df = db.get_combos_de_producto(tienda, sku, n=15)
+    if not df.empty:
+        df = df.copy()
+        df["confianza_pct"] = pd.to_numeric(df["confianza"], errors="coerce") * 100
     cols = [
         {"name": "Se compra junto con", "id": "producto"},
         {"name": "Boletas juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
-        {"name": "Confianza", "id": "confianza", "type": "numeric"},
-        {"name": "Lift", "id": "lift", "type": "numeric"},
+        {"name": "% de compras que también lo llevan", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad (lift)", "id": "lift", "type": "numeric"},
     ]
     return clean_records(df), cols
 
