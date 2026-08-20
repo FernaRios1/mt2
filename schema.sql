@@ -122,3 +122,10 @@ CREATE TABLE IF NOT EXISTS sync_log (
     ok                  BOOLEAN,
     mensaje             TEXT
 );
+
+-- V3: ubicación vigente del producto en la tienda. Permite analizar también
+-- productos con stock pero sin venta, que no aparecen en fact_venta_semana.
+ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS pasillo VARCHAR(20);
+ALTER TABLE dim_producto_tienda ADD COLUMN IF NOT EXISTS rack VARCHAR(20);
+CREATE INDEX IF NOT EXISTS idx_dpt_pasillo ON dim_producto_tienda (cod_tienda, pasillo);
+CREATE INDEX IF NOT EXISTS idx_dpt_rack ON dim_producto_tienda (cod_tienda, rack);

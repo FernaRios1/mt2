@@ -425,3 +425,71 @@ a { color: inherit; }
   .page-title { font-size: 22px; }
   .mode-banner { align-items: flex-start; }
 }
+
+/* V3 — filtros visibles, descargas y categorías de la selección */
+.active-filter-summary {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.filter-chip-wrap { display: flex; flex-wrap: wrap; gap: 5px; }
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  color: #1d4ed8;
+  font-size: 9px;
+  font-weight: 650;
+}
+.sidebar-clear { margin-top: 8px; }
+.detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.download-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.download-button {
+  appearance: none;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  border-radius: 9px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.download-button:hover { background: #f8fafc; border-color: #94a3b8; }
+.diagnostic-category-box {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.category-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.category-row:last-child { border-bottom: 0; }
+.category-name { display: block; font-size: 11px; color: #0f172a; }
+.category-family { display: block; font-size: 9px; color: var(--muted); margin-top: 2px; }
+.category-values { text-align: right; white-space: nowrap; }
+.category-values strong { display: block; font-size: 11px; }
+.category-values span { display: block; font-size: 9px; color: var(--muted); margin-top: 2px; }
+
+@media (max-width: 720px) {
+  .detail-toolbar { align-items: stretch; }
+  .download-actions { width: 100%; }
+  .download-button { flex: 1 1 180px; }
+}

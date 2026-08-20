@@ -168,6 +168,8 @@ sidebar = html.Aside([
                            className="side-radio", labelClassName="side-radio-item"),
         ], className="advanced-filters"),
     ], className="filters-details"),
+    html.Div(id="active-filter-summary", className="active-filter-summary"),
+    html.Button("Limpiar filtros", id="btn-clear-filters", n_clicks=0, className="ghost-button sidebar-clear"),
 
     html.Div(className="sidebar-spacer"),
     dcc.Link("Administrar planos", href="/admin", className="side-navlink"),
@@ -192,7 +194,7 @@ main = html.Main([
         html.Div(id="action-summary"),
         html.Div("Haz clic en una fila para analizar ese rack.", className="micro-help"),
         action_table,
-    ], subtitle="Prioriza señales YTD. No recomienda por intuición: cada acción muestra el motivo que la dispara."),
+    ], subtitle="Respeta el período y los filtros activos. Cada acción muestra la señal que la dispara."),
 
     dbc.Row([
         dbc.Col(section("Mapa de la tienda", [
@@ -207,7 +209,7 @@ main = html.Main([
             section("Diagnóstico", [
                 html.Div(id="selection-panel"),
                 html.Button("Quitar selección", id="btn-clear-selection", n_clicks=0, className="ghost-button"),
-            ], subtitle="La recomendación usa YTD; los KPIs del diagnóstico respetan el período elegido."),
+            ], subtitle="KPIs, categorías y recomendación respetan el período y los filtros activos."),
             section("Tendencia semanal", [
                 dcc.Graph(id="tendencia-semanal", config={"displayModeBar": False}),
             ], class_name="section-panel compact-panel"),
@@ -215,6 +217,13 @@ main = html.Main([
     ], className="g-3"),
 
     section("Explorar el porqué", [
+        html.Div([
+            html.Div("El detalle de estas pestañas respeta tienda, período, filtros y rack/pasillo seleccionado.", className="micro-help"),
+            html.Div([
+                html.Button("Descargar detalle filtrado", id="btn-download-detalle", n_clicks=0, className="download-button"),
+                html.Button("Descargar stock sin venta", id="btn-download-sinventa", n_clicks=0, className="download-button"),
+            ], className="download-actions"),
+        ], className="detail-toolbar"),
         dcc.Tabs(id="tabs-detalle", value="racks", className="detail-tabs", children=[
             dcc.Tab(label="Racks y pasillos", value="racks", className="detail-tab", selected_className="detail-tab-selected", children=[
                 dbc.Row([
@@ -254,7 +263,7 @@ main = html.Main([
                                          style_data_conditional=ACTION_STYLE),
                     html.Hr(className="soft-hr"),
                     html.Div("Cross-sell y combos", className="subblock-title"),
-                    html.Div("Se usa como oportunidad comercial, no como sustituto de una recomendación de espacio.",
+                    html.Div("Cross-sell se calcula con las boletas del año. Respeta la tienda y la sección seleccionada; el período mes/semana no recalcula los pares.",
                              className="section-subtitle"),
                     dbc.Row([
                         dbc.Col([
@@ -277,8 +286,10 @@ main = html.Main([
 
     section("Contexto anual", [
         html.Div(id="comparativo-cards"),
-    ], subtitle="Venta, transacciones, ticket y clientes contra el año anterior al mismo corte disponible en la base."),
+    ], subtitle="Contexto de tienda completa. No cambia con filtros de producto ni con el clic en un rack."),
 
+    dcc.Download(id="download-detalle"),
+    dcc.Download(id="download-sinventa"),
     dcc.Store(id="store-seleccion", data=None),
 ], className="main")
 
@@ -411,21 +422,55 @@ def _periodo_opts(tienda, modo):
     sem_opts = [{"label": f"Semana {s}", "value": s} for s in semanas_disp]
     mostrar_mes = {"display": "block"} if modo == "Mes" else {"display": "none"}
     mostrar_sem = {"display": "block"} if modo == "Semana" else {"display": "none"}
+    semana_default = (semanas_disp[-2] if len(semanas_disp) >= 2 else (semanas_disp[-1] if semanas_disp else None))
     return mes_opts, (meses_disp[-1] if meses_disp else None), mostrar_mes, \
-        sem_opts, (semanas_disp[-1] if semanas_disp else None), mostrar_sem
+        sem_opts, semana_default, mostrar_sem
 
 
 @app.callback(
     Output("f-familia", "options"), Output("f-categoria", "options"), Output("f-clasificacion", "options"),
     Output("f-zona_pck", "options"), Output("f-responsable_linea", "options"), Output("f-marca", "options"),
-    Input("f-tienda", "value"),
+    Input("f-tienda", "value"), Input("f-familia", "value"), Input("f-categoria", "value"),
+    Input("f-clasificacion", "value"), Input("f-zona_pck", "value"),
+    Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
 )
-def _filtro_opts(tienda):
+def _filtro_opts(tienda, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
     if not tienda:
         return [], [], [], [], [], []
-    op = db.get_opciones_filtro(tienda)
+    filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    op = db.get_opciones_filtro_dependientes(tienda, filtros=filtros)
     return (op["familia"], op["categoria"], op["clasificacion"], op["zona_pck"],
             op["responsable_linea"], op["marca"])
+
+
+@app.callback(
+    Output("f-familia", "value"), Output("f-categoria", "value"), Output("f-clasificacion", "value"),
+    Output("f-zona_pck", "value"), Output("f-responsable_linea", "value"), Output("f-marca", "value"),
+    Output("f-maneja_stock", "value"),
+    Input("btn-clear-filters", "n_clicks"), prevent_initial_call=True,
+)
+def _limpiar_filtros(_):
+    return [], [], [], [], [], [], "Todos"
+
+
+@app.callback(
+    Output("active-filter-summary", "children"),
+    Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
+    Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
+    Input("f-maneja_stock", "value"),
+)
+def _resumen_filtros(familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
+    items = []
+    etiquetas = [("Familia", familia), ("Categoría", categoria), ("Clasificación", clasificacion),
+                 ("Zona", zona_pck), ("Jefe", responsable), ("Marca", marca)]
+    for label, vals in etiquetas:
+        if vals:
+            items.append(f"{label}: {', '.join(map(str, vals[:2]))}{'…' if len(vals) > 2 else ''}")
+    if maneja and maneja != "Todos":
+        items.append(f"Maneja stock: {maneja}")
+    if not items:
+        return "Sin filtros avanzados"
+    return html.Div([html.Span(x, className="filter-chip") for x in items], className="filter-chip-wrap")
 
 
 # =========================
@@ -471,21 +516,23 @@ def _seleccionar(click_mapa, action_cell, clear_clicks, tienda, mes, semana, niv
 
 
 # =========================
-# Centro de acciones YTD
+# Centro de acciones del período
 # =========================
 @app.callback(
     Output("action-summary", "children"),
     Output("tabla-acciones-rack", "data"), Output("tabla-acciones-rack", "columns"),
-    Input("f-tienda", "value"), Input("f-familia", "value"), Input("f-categoria", "value"),
-    Input("f-clasificacion", "value"), Input("f-zona_pck", "value"),
-    Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
+    Input("f-tienda", "value"), Input("f-modo-periodo", "value"), Input("f-mes", "value"), Input("f-semana", "value"),
+    Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
+    Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
 )
-def _acciones_rack(tienda, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
+def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
     if not tienda:
         return None, [], []
     anio = db.get_anio_actual(tienda)
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
-    df = db.get_acciones_rack(tienda, anio, filtros=filtros)
+    mes_sel = mes if modo == "Mes" else None
+    semana_sel = semana if modo == "Semana" else None
+    df = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
     if df.empty:
         return html.Div("No hay datos para construir recomendaciones."), [], []
 
@@ -497,9 +544,14 @@ def _acciones_rack(tienda, familia, categoria, clasificacion, zona_pck, responsa
     optimizar = int((df["accion"] == "Optimizar surtido").sum())
 
     top = accionables.iloc[0] if len(accionables) else df.iloc[0]
-    filtros_activos = sum(len(v) for v in filtros.values()) > 0
-    comparacion_note = ("Con filtros de producto, el motor no mezcla el histórico YoY porque 2025 no está desagregado por SKU."
-                        if filtros_activos else "La tendencia compara contra el año anterior al mismo corte disponible.")
+    comp_label = None
+    if "comparacion_label" in df.columns and len(df):
+        comp_label = df.iloc[0].get("comparacion_label")
+    periodo_actual = (f"Semana {semana_sel}" if semana_sel else
+                      MONTHS.get(int(mes_sel), f"Mes {mes_sel}") if mes_sel else f"Año {anio}")
+    comparacion_note = (f"Acciones calculadas para {periodo_actual}. Comparación: {comp_label}."
+                        if comp_label else
+                        f"Acciones calculadas para {periodo_actual}. Sin período comparable disponible; se usa nivel de venta y venta por SKU.")
 
     summary = html.Div([
         html.Div([
@@ -528,8 +580,8 @@ def _acciones_rack(tienda, familia, categoria, clasificacion, zona_pck, responsa
         {"name": "Acción", "id": "accion"},
         {"name": "Pasillo", "id": "pasillo"},
         {"name": "Rack", "id": "rack"},
-        {"name": "Venta YTD", "id": "venta", "type": "numeric", "format": MONEY_FMT},
-        {"name": "Var. AA", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Venta período", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Variación", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
         {"name": "SKUs", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta / SKU", "id": "venta_por_sku", "type": "numeric", "format": MONEY_FMT},
         {"name": "Por qué", "id": "motivo"},
@@ -583,8 +635,8 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
                                 pasillo=pasillo_f, rack=rack_f, n=50, ascendente=True)
     tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
                           pasillo=pasillo_f, rack=rack_f)
-    sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros)
-    acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250)
+    sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+    acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250, pasillo=pasillo_f, rack=rack_f)
 
     tiendas = db.get_tiendas()
     row_store = tiendas[tiendas["cod_tienda"] == tienda]
@@ -609,6 +661,9 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         ts = pd.to_datetime(sync["ejecutado_en"], errors="coerce")
         if pd.notna(ts):
             sync_txt = f"Última sincronización: {ts.strftime('%d/%m/%Y %H:%M')}"
+            msg = sync.get("mensaje")
+            if msg and str(msg) != "OK":
+                sync_txt += f" · {msg}"
 
     n_filtros = sum(len(v) for v in filtros.values())
     header = html.Div([
@@ -683,6 +738,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     ]
     prod_cols = [
         {"name": "SKU", "id": "cod_rapido"}, {"name": "Producto", "id": "descripcion"},
+        {"name": "Categoría", "id": "categoria"}, {"name": "Familia", "id": "familia"},
         {"name": "Marca", "id": "marca"}, {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Cantidad", "id": "cantidad", "type": "numeric", "format": NUM_FMT},
@@ -700,8 +756,9 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
 
     sinventa_cols = [
         {"name": "Prioridad", "id": "prioridad"}, {"name": "SKU", "id": "cod_rapido"},
-        {"name": "Producto", "id": "descripcion"}, {"name": "Marca", "id": "marca"},
-        {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
+        {"name": "Producto", "id": "descripcion"}, {"name": "Categoría", "id": "categoria"},
+        {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
+        {"name": "Marca", "id": "marca"}, {"name": "Stock", "id": "stock", "type": "numeric", "format": NUM_FMT},
         {"name": "Venta AA", "id": "venta_anio_anterior", "type": "numeric", "format": MONEY_FMT},
         {"name": "Acción", "id": "accion"}, {"name": "Por qué", "id": "motivo"},
     ]
@@ -738,8 +795,10 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
         return None
     anio = db.get_anio_actual(tienda)
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    mes_sel = mes if modo == "Mes" else None
+    semana_sel = semana if modo == "Semana" else None
     if not seleccion:
-        acciones = db.get_acciones_rack(tienda, anio, filtros=filtros)
+        acciones = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
         accionables = acciones[acciones["accion"] != "Mantener"] if not acciones.empty else acciones
         if len(accionables):
             top = accionables.iloc[0]
@@ -755,8 +814,6 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
             html.P("Haz clic en el mapa para ver KPIs, tendencia y una recomendación explicada.", className="diagnostic-text"),
         ])
 
-    mes_sel = mes if modo == "Mes" else None
-    semana_sel = semana if modo == "Semana" else None
     pasillo_f = seleccion["clave"] if seleccion.get("nivel") == "pasillo" else None
     rack_f = seleccion["clave"] if seleccion.get("nivel") == "rack" else None
     resumen = db.get_resumen_periodo(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
@@ -770,14 +827,14 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
         html.Div([html.Span("Unidades"), html.Strong(f"{float(resumen.get('unidades') or 0):,.0f}".replace(",", "."))]),
     ], className="diagnostic-metrics")
 
-    acciones = db.get_acciones_rack(tienda, anio, filtros=filtros)
+    acciones = db.get_acciones_rack(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros)
     if rack_f and not acciones.empty:
         match = acciones[acciones["rack"] == rack_f]
         if len(match):
             r = match.iloc[0]
             action_box = html.Div([
                 html.Div([html.Span(r["prioridad"], className=f"priority-pill priority-{r['prioridad'].lower()}"),
-                          html.Span("Recomendación YTD", className="diagnostic-kicker")], className="action-hero-top"),
+                          html.Span("Recomendación del período", className="diagnostic-kicker")], className="action-hero-top"),
                 html.H4(r["accion"], className="diagnostic-action"),
                 html.P(r["motivo"], className="diagnostic-text"),
                 html.P(r["recomendacion"], className="diagnostic-recommendation"),
@@ -795,12 +852,94 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
     else:
         action_box = None
 
+    categorias = db.get_categorias_seccion(
+        tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+        pasillo=pasillo_f, rack=rack_f, n=6,
+    )
+    if categorias is not None and not categorias.empty:
+        cat_rows = []
+        for r in categorias.itertuples():
+            cat_rows.append(html.Div([
+                html.Div([
+                    html.Strong(str(r.categoria), className="category-name"),
+                    html.Span(str(r.familia), className="category-family"),
+                ]),
+                html.Div([
+                    html.Strong(fmt_money_short(r.venta)),
+                    html.Span(f"{float(r.participacion_pct):.1f}% venta · {int(r.skus_con_venta)}/{int(r.skus_asociados)} SKU con venta"),
+                ], className="category-values"),
+            ], className="category-row"))
+        category_box = html.Div([
+            html.Div("Categorías asociadas a esta sección", className="diagnostic-kicker"),
+            html.Div("Incluye el surtido vigente; la fracción indica SKU con venta / SKU asociados.", className="diagnostic-hint"),
+            *cat_rows,
+        ], className="diagnostic-category-box")
+    else:
+        category_box = None
+
     return html.Div([
         html.Div("Sección seleccionada", className="diagnostic-kicker"),
         html.H3(title, className="diagnostic-title"),
         metrics,
         action_box,
+        category_box,
     ])
+
+
+# =========================
+# Descargas
+# =========================
+@app.callback(
+    Output("download-detalle", "data"),
+    Input("btn-download-detalle", "n_clicks"),
+    State("f-tienda", "value"), State("f-modo-periodo", "value"), State("f-mes", "value"), State("f-semana", "value"),
+    State("f-familia", "value"), State("f-categoria", "value"), State("f-clasificacion", "value"),
+    State("f-zona_pck", "value"), State("f-responsable_linea", "value"), State("f-marca", "value"),
+    State("f-maneja_stock", "value"), State("store-seleccion", "data"),
+    prevent_initial_call=True,
+)
+def _descargar_detalle(_, tienda, modo, mes, semana, familia, categoria, clasificacion,
+                       zona_pck, responsable, marca, maneja, seleccion):
+    if not tienda:
+        return dash.no_update
+    anio = db.get_anio_actual(tienda)
+    mes_sel = mes if modo == "Mes" else None
+    semana_sel = semana if modo == "Semana" else None
+    filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    df = db.get_detalle_productos(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
+                                  pasillo=pasillo_f, rack=rack_f)
+    if df.empty:
+        return dash.no_update
+    sufijo = rack_f or pasillo_f or "tienda"
+    return dcc.send_data_frame(df.to_csv, f"detalle_racks_{tienda}_{sufijo}_{anio}.csv",
+                               index=False, sep=";", encoding="utf-8-sig")
+
+
+@app.callback(
+    Output("download-sinventa", "data"),
+    Input("btn-download-sinventa", "n_clicks"),
+    State("f-tienda", "value"), State("f-familia", "value"), State("f-categoria", "value"),
+    State("f-clasificacion", "value"), State("f-zona_pck", "value"),
+    State("f-responsable_linea", "value"), State("f-marca", "value"), State("f-maneja_stock", "value"),
+    State("store-seleccion", "data"),
+    prevent_initial_call=True,
+)
+def _descargar_sinventa(_, tienda, familia, categoria, clasificacion, zona_pck,
+                        responsable, marca, maneja, seleccion):
+    if not tienda:
+        return dash.no_update
+    anio = db.get_anio_actual(tienda)
+    filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
+    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
+    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    df = db.get_acciones_producto(tienda, anio, filtros=filtros, n=None, pasillo=pasillo_f, rack=rack_f)
+    if df.empty:
+        return dash.no_update
+    sufijo = rack_f or pasillo_f or "tienda"
+    return dcc.send_data_frame(df.to_csv, f"stock_sin_venta_{tienda}_{sufijo}_{anio}.csv",
+                               index=False, sep=";", encoding="utf-8-sig")
 
 
 # =========================
