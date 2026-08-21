@@ -787,3 +787,84 @@ a { color: inherit; }
 .diagnostic-comparison-warn { border-color: #fed7aa !important; background: #fff7ed !important; color: #9a3412 !important; }
 
 .priority-info { background: #e2e8f0 !important; color: #475569 !important; }
+
+/* ==========================================================
+   V7 — legibilidad, filtros de ubicación y ayudas limpias
+   ========================================================== */
+.sidebar { color: #f8fafc !important; }
+.sidebar .side-label,
+.sidebar .side-mini-label,
+.sidebar .filters-summary,
+.sidebar .side-radio,
+.sidebar .side-radio label,
+.sidebar .side-radio-item,
+.sidebar .period-option {
+  color: #e2e8f0 !important;
+  opacity: 1 !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+.sidebar .period-option { font-weight: 650; }
+.sidebar .period-option:has(input:checked) {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+  -webkit-text-fill-color: #0f172a !important;
+  font-weight: 800;
+}
+.sidebar .side-radio-item { min-width: 54px; }
+.sidebar .side-radio-item input { accent-color: #fb923c !important; }
+.side-location-help {
+  margin: -1px 2px 6px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.sidebar .Select.is-disabled > .Select-control,
+.sidebar .Select--is-disabled .Select-control,
+.sidebar .Select__control--is-disabled {
+  background: #111827 !important;
+  opacity: .72;
+  border-color: #334155 !important;
+}
+.sidebar .Select.is-disabled .Select-placeholder,
+.sidebar .Select--is-disabled .Select-placeholder,
+.sidebar .Select__control--is-disabled .Select__placeholder {
+  color: #94a3b8 !important;
+  -webkit-text-fill-color: #94a3b8 !important;
+}
+
+/* El tooltip CSS es el único tooltip. El atributo title se eliminó en V7. */
+.info-tip::after { max-width: 360px; }
+.sidebar .info-tip:hover::after,
+.sidebar .info-tip:focus::after {
+  width: 330px;
+  max-width: min(330px, calc(100vw - 300px));
+}
+
+.mini-stat-disabled {
+  background: #f8fafc !important;
+  color: #64748b !important;
+  border-style: dashed !important;
+}
+.mini-stat-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.data-note {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Cross-sell: permitir lectura sin aplastar columnas. */
+#tabla-combos .dash-spreadsheet-container,
+#tabla-combos-producto .dash-spreadsheet-container { min-width: 980px; }
+#tabla-combos .dash-table-container,
+#tabla-combos-producto .dash-table-container { overflow-x: auto; }
+
+@media (max-width: 900px) {
+  .mini-stat-grid-3 { grid-template-columns: 1fr; }
+}
+.mode-banner-warning { border-color: #fcd34d; background: #fffbeb; color: #92400e; }
+.mode-pill-warning { background: #fef3c7; color: #92400e; }

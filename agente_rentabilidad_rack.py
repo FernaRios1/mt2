@@ -67,7 +67,7 @@ WITH StockRank AS (
         s.Familia AS subfamilia,
         s.Subfamilia AS categoria,
         s.Clasificacion AS clasificacion,
-        s.Responsable_Linea AS responsable_linea,
+        CAST(NULL AS varchar(200)) AS responsable_linea,  -- columna no existe en INFSTOCK de tu ambiente
         ROW_NUMBER() OVER (
             PARTITION BY s.Cod_Rapido, s.cod_emp
             ORDER BY s.Fecha_Proceso DESC
@@ -351,7 +351,7 @@ def main():
             "descripcion=COALESCE(EXCLUDED.descripcion,dim_producto_tienda.descripcion), marca=EXCLUDED.marca, "
             "stock=EXCLUDED.stock, familia=EXCLUDED.familia, subfamilia=EXCLUDED.subfamilia, "
             "categoria=EXCLUDED.categoria, clasificacion=EXCLUDED.clasificacion, maneja_stock=EXCLUDED.maneja_stock, "
-            "zona_pck=EXCLUDED.zona_pck, responsable_linea=EXCLUDED.responsable_linea, "
+            "zona_pck=EXCLUDED.zona_pck, responsable_linea=COALESCE(EXCLUDED.responsable_linea,dim_producto_tienda.responsable_linea), "
             "pasillo=EXCLUDED.pasillo, rack=EXCLUDED.rack, actualizado=now()",
             rows_dim, page_size=5000)
         print(f"dim_producto_tienda: {len(rows_dim):,} filas")

@@ -107,7 +107,7 @@ ACTION_STYLE = [
 def info_tip(text):
     """Icono de ayuda: al posar el mouse (o foco) muestra cómo se calcula/interpreta."""
     return html.Span(
-        "i", className="info-tip", title=text,
+        "i", className="info-tip", tabIndex=0,
         **{"data-tip": text, "aria-label": text},
     )
 
@@ -146,6 +146,20 @@ def make_filters(maneja_sel, familia, categoria, clasificacion, zona_pck, respon
     }
 
 
+def effective_section(seleccion=None, pasillo_ui=None, rack_ui=None):
+    """Mapa/tabla manda si existe; si no, usa el filtro explícito de ubicación del sidebar."""
+    if seleccion:
+        if seleccion.get("nivel") == "rack" and seleccion.get("clave"):
+            return None, str(seleccion["clave"])
+        if seleccion.get("nivel") == "pasillo" and seleccion.get("clave"):
+            return str(seleccion["clave"]), None
+    if rack_ui:
+        return None, str(rack_ui)
+    if pasillo_ui:
+        return str(pasillo_ui), None
+    return None, None
+
+
 # =========================
 # Layout principal
 # =========================
@@ -170,6 +184,15 @@ sidebar = html.Aside([
     dcc.Dropdown(id="f-mes", clearable=False, className="side-dd"),
     dcc.Dropdown(id="f-semana", clearable=False, className="side-dd", style={"display": "none"}),
 
+
+    html.Div(label_with_tip("Ubicación", "Filtro directo de navegación. Pasillo y rack se aplican a todo el detalle. Si haces clic en el mapa o en una acción, ese clic toma prioridad hasta que cambies este filtro."), className="side-label side-gap"),
+    dcc.Dropdown(id="f-pasillo-ubic", clearable=True, placeholder="Todos los pasillos", className="side-dd"),
+    dcc.Dropdown(id="f-rack-ubic", clearable=True, placeholder="Primero elige un pasillo", className="side-dd", disabled=True),
+    html.Div("Puedes filtrar un pasillo completo o bajar a un rack específico.", className="side-location-help"),
+
+    # Campo conservado en callbacks por compatibilidad; el origen real no dispone de Responsable_Linea.
+    dcc.Dropdown(id="f-responsable_linea", multi=True, style={"display": "none"}),
+
     html.Details([
         html.Summary([html.Span("Filtros avanzados"), info_tip("Filtran venta, mapa, diagnóstico, productos y categorías. Las recomendaciones de espacio solo aparecen cuando el período tiene ubicación física histórica. Stock sin venta es YTD y cross-sell usa el año completo de la tienda.")], className="filters-summary"),
         html.Div([
@@ -177,7 +200,6 @@ sidebar = html.Aside([
             dcc.Dropdown(id="f-categoria", multi=True, placeholder="Categoría", className="side-dd"),
             dcc.Dropdown(id="f-clasificacion", multi=True, placeholder="Clasificación SKU", className="side-dd"),
             dcc.Dropdown(id="f-zona_pck", multi=True, placeholder="Zona de picking", className="side-dd"),
-            dcc.Dropdown(id="f-responsable_linea", multi=True, placeholder="Jefe de línea", className="side-dd"),
             dcc.Dropdown(id="f-marca", multi=True, placeholder="Marca", className="side-dd"),
             html.Div("Maneja stock", className="side-mini-label"),
             dcc.RadioItems(id="f-maneja_stock", options=["Todos", "Sí", "No"], value="Todos",
@@ -296,7 +318,7 @@ main = html.Main([
             ]),
             dcc.Tab(label="Categorías", value="categorias", className="detail-tab", selected_className="detail-tab-selected", children=[
                 html.Div([
-                    html.Div("Familia → jefe de línea → categoría", className="subblock-title"),
+                    html.Div("Familia → categoría", className="subblock-title"),
                     dcc.Graph(id="treemap-familia", config={"displayModeBar": False}),
                 ], className="tab-content"),
             ]),
@@ -312,12 +334,12 @@ main = html.Main([
                                              "motivo": "Explicación de la señal que originó la acción.",
                                          }),
                     html.Hr(className="soft-hr"),
-                    html.Div(label_with_tip("Productos que se compran juntos", "Cross-sell se calcula solo con transacciones de la tienda seleccionada y usando las boletas del año completo disponible. Mes/Semana no recalculan estas relaciones."), className="subblock-title"),
+                    html.Div(label_with_tip("Complementos y afinidad de compra", "Cross-sell se calcula con transacciones de la tienda seleccionada y el año completo disponible. Mes/Semana no recalculan estas relaciones. Sirve para sugerir cercanía, bundles o venta asistida; no demuestra causalidad."), className="subblock-title"),
                     html.Div("Ámbito: tienda seleccionada · año completo disponible. Si eliges un rack/pasillo, se muestran relaciones vinculadas al surtido vigente hoy en esa sección.",
                              className="section-subtitle"),
                     html.Div([
                         html.Strong("Cómo leerlo: "),
-                        html.Span("Compras juntas = transacciones donde aparecen ambos productos. % A→B = de quienes compraron A, qué porcentaje también compró B. Afinidad = cuántas veces más (o menos) se compran juntos frente a lo esperable por su frecuencia normal."),
+                        html.Span("Compras juntas = transacciones con ambos. % A→B = de quienes compraron A, qué porcentaje también llevó B. Frecuencia normal de B = cuánto aparece B sin condicionar por A. Afinidad compara ambos porcentajes. Ocasiones A sin B = compras de A donde B no apareció: es un universo para probar cross-sell, no una venta garantizada."),
                     ], className="metric-explainer"),
                     dbc.Row([
                         dbc.Col([
@@ -329,7 +351,10 @@ main = html.Main([
                             dash_table.DataTable(id="tabla-combos", **BASE_TABLE, tooltip_header={
                                 "boletas": "Cantidad de transacciones de la tienda donde aparecen ambos productos.",
                                 "confianza_pct": "De todas las transacciones que contienen Producto A, porcentaje que también contiene Producto B.",
+                                "frecuencia_base_pct": "Frecuencia normal de B en las compras de la tienda. Ayuda a entender si un lift alto se debe a que B es muy poco frecuente.",
                                 "afinidad_txt": "Lift: P(B|A) / P(B). 2× = se compran juntos 2 veces más de lo esperable; 1× = sin asociación especial; <1× = menos de lo esperable.",
+                                "oportunidad_sin_b": "Transacciones con A donde B no apareció. Es un universo potencial para probar recomendación/complemento; no es una estimación de venta incremental.",
+                                "senal": "Lectura simple de frecuencia y especificidad de la relación; no usa margen.",
                             }),
                         ], md=6),
                         dbc.Col([
@@ -337,7 +362,10 @@ main = html.Main([
                             dash_table.DataTable(id="tabla-combos-producto", **BASE_TABLE, tooltip_header={
                                 "boletas": "Cantidad de transacciones donde aparecen juntos el producto seleccionado y el relacionado.",
                                 "confianza_pct": "De las compras que contienen el producto seleccionado, porcentaje que también llevan este producto relacionado.",
+                                "frecuencia_base_pct": "Frecuencia normal del complemento en la tienda, sin condicionar por el producto seleccionado.",
                                 "afinidad_txt": "Lift: compara esa probabilidad con la frecuencia normal del producto relacionado en la tienda. 1× = esperado; >1× = asociación positiva.",
+                                "oportunidad_sin_complemento": "Compras del producto seleccionado donde este complemento no apareció. Úsalo como tamaño de universo para probar venta cruzada; no como pronóstico.",
+                                "senal": "Frecuente = alto % de adopción; Específica = afinidad alta; ambas = complemento especialmente interesante.",
                             }),
                         ], md=6),
                     ], className="g-3"),
@@ -490,6 +518,23 @@ def _periodo_opts(tienda, modo):
         sem_opts, semana_default, mostrar_sem
 
 
+@app.callback(Output("f-pasillo-ubic", "options"), Input("f-tienda", "value"))
+def _ubic_pasillos(tienda):
+    if not tienda:
+        return []
+    df = db.get_pasillos_disponibles(tienda)
+    return [{"label": f"Pasillo {r.pasillo}", "value": str(r.pasillo)} for r in df.itertuples()]
+
+
+@app.callback(Output("f-rack-ubic", "options"), Output("f-rack-ubic", "disabled"),
+              Input("f-tienda", "value"), Input("f-pasillo-ubic", "value"))
+def _ubic_racks(tienda, pasillo):
+    if not tienda or not pasillo:
+        return [], True
+    df = db.get_racks_disponibles(tienda, pasillo=pasillo)
+    return ([{"label": f"Rack {r.rack}", "value": str(r.rack)} for r in df.itertuples()], False)
+
+
 @app.callback(
     Output("f-familia", "options"), Output("f-categoria", "options"), Output("f-clasificacion", "options"),
     Output("f-zona_pck", "options"), Output("f-responsable_linea", "options"), Output("f-marca", "options"),
@@ -509,20 +554,20 @@ def _filtro_opts(tienda, familia, categoria, clasificacion, zona_pck, responsabl
 @app.callback(
     Output("f-familia", "value"), Output("f-categoria", "value"), Output("f-clasificacion", "value"),
     Output("f-zona_pck", "value"), Output("f-responsable_linea", "value"), Output("f-marca", "value"),
-    Output("f-maneja_stock", "value"),
-    Input("btn-clear-filters", "n_clicks"), prevent_initial_call=True,
+    Output("f-maneja_stock", "value"), Output("f-pasillo-ubic", "value"), Output("f-rack-ubic", "value"),
+    Input("btn-clear-filters", "n_clicks"), Input("f-tienda", "value"), prevent_initial_call=True,
 )
-def _limpiar_filtros(_):
-    return [], [], [], [], [], [], "Todos"
+def _limpiar_filtros(_, _tienda):
+    return [], [], [], [], [], [], "Todos", None, None
 
 
 @app.callback(
     Output("active-filter-summary", "children"),
     Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
     Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
-    Input("f-maneja_stock", "value"),
+    Input("f-maneja_stock", "value"), Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"),
 )
-def _resumen_filtros(familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
+def _resumen_filtros(familia, categoria, clasificacion, zona_pck, responsable, marca, maneja, pasillo_ubic, rack_ubic):
     items = []
     etiquetas = [("Familia", familia), ("Categoría", categoria), ("Clasificación", clasificacion),
                  ("Zona", zona_pck), ("Jefe", responsable), ("Marca", marca)]
@@ -531,6 +576,10 @@ def _resumen_filtros(familia, categoria, clasificacion, zona_pck, responsable, m
             items.append(f"{label}: {', '.join(map(str, vals[:2]))}{'…' if len(vals) > 2 else ''}")
     if maneja and maneja != "Todos":
         items.append(f"Maneja stock: {maneja}")
+    if rack_ubic:
+        items.append(f"Rack: {rack_ubic}")
+    elif pasillo_ubic:
+        items.append(f"Pasillo: {pasillo_ubic}")
     if not items:
         return "Sin filtros avanzados"
     return html.Div([html.Span(x, className="filter-chip") for x in items], className="filter-chip-wrap")
@@ -548,15 +597,17 @@ def _resumen_filtros(familia, categoria, clasificacion, zona_pck, responsable, m
     Input("f-nivel-mapa", "value"), Input("f-familia", "value"), Input("f-categoria", "value"),
     Input("f-clasificacion", "value"), Input("f-zona_pck", "value"),
     Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
+    Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"),
     State("tabla-acciones-rack", "data"), State("store-seleccion", "data"),
     prevent_initial_call=True,
 )
 def _seleccionar(click_mapa, action_cell, clear_clicks, tienda, mes, semana, nivel,
                   familia, categoria, clasificacion, zona_pck, responsable, marca, maneja,
-                  action_data, actual):
+                  pasillo_ubic, rack_ubic, action_data, actual):
     trig = callback_context.triggered_id
     reset_ids = {"f-tienda", "f-mes", "f-semana", "f-nivel-mapa", "f-familia", "f-categoria",
-                 "f-clasificacion", "f-zona_pck", "f-responsable_linea", "f-marca", "f-maneja_stock"}
+                 "f-clasificacion", "f-zona_pck", "f-responsable_linea", "f-marca", "f-maneja_stock",
+                 "f-pasillo-ubic", "f-rack-ubic"}
     if trig in reset_ids or trig == "btn-clear-selection":
         return None
     if trig == "tabla-acciones-rack" and action_cell and action_data:
@@ -587,8 +638,9 @@ def _seleccionar(click_mapa, action_cell, clear_clicks, tienda, mes, semana, niv
     Input("f-tienda", "value"), Input("f-modo-periodo", "value"), Input("f-mes", "value"), Input("f-semana", "value"),
     Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
     Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"), Input("f-maneja_stock", "value"),
+    Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"),
 )
-def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja):
+def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck, responsable, marca, maneja, pasillo_ubic, rack_ubic):
     if not tienda:
         return None, [], []
     anio = db.get_anio_actual(tienda)
@@ -613,6 +665,17 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
     if df.empty:
         return html.Div("No hay datos físicos suficientes para construir recomendaciones."), [], []
 
+    # El motor se calcula contra todos los racks del universo filtrado; la ubicación del sidebar
+    # solo acota qué señales se muestran, sin alterar los percentiles de referencia.
+    df_scope = df.copy()
+    if rack_ubic:
+        df_scope = df_scope[df_scope["rack"].astype(str) == str(rack_ubic)]
+    elif pasillo_ubic:
+        df_scope = df_scope[df_scope["pasillo"].astype(str) == str(pasillo_ubic)]
+    if df_scope.empty:
+        return html.Div("No hay racks con venta física para la ubicación seleccionada y los filtros actuales.", className="empty-note"), [], []
+
+    df = df_scope
     accionables = df[df["accion"] != "Mantener"].copy()
     alta = int((df["prioridad"] == "Alta").sum())
     proteger = int((df["accion"] == "Proteger desempeño").sum())
@@ -625,10 +688,30 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
     comp_label = df.iloc[0].get("comparacion_label") if len(df) else None
     periodo_actual = (f"Semana {semana_sel}" if semana_sel else
                       MONTHS.get(int(mes_sel), f"Mes {mes_sel}") if mes_sel else f"Año {anio}")
+    cov = ctx.get("cobertura_venta_pct")
+    cov_note = (f" Cobertura de venta con ubicación: {cov:.1%}." if cov is not None else "")
+    if cov is not None and cov < 0.90:
+        cov_note += " Cobertura bajo 90%: validar los racks críticos antes de ejecutar cambios de espacio."
     comparacion_note = (f"Desempeño físico de {periodo_actual} vs {comp_label}. "
-                        "No usa año anterior: INFSTOCK no conserva ubicación histórica suficiente para eso."
+                        "No usa año anterior: INFSTOCK no conserva ubicación histórica suficiente para eso." + cov_note
                         if comp_label else
-                        f"Desempeño físico de {periodo_actual}; no hay período anterior completamente cubierto dentro del historial disponible.")
+                        f"Desempeño físico de {periodo_actual}; no hay período anterior completamente cubierto dentro del historial disponible." + cov_note)
+
+    if comp_label:
+        stats = html.Div([
+            html.Div([html.Strong(alta), html.Span("prioridad alta")], className="mini-stat"),
+            html.Div([html.Strong(proteger), html.Span("proteger desempeño")], className="mini-stat"),
+            html.Div([html.Strong(revisar), html.Span("revisar espacio")], className="mini-stat"),
+            html.Div([html.Strong(potenciar), html.Span("potenciar")], className="mini-stat"),
+            html.Div([html.Strong(mix), html.Span("revisar mix")], className="mini-stat"),
+            html.Div([html.Strong(cambios), html.Span("racks cambiados")], className="mini-stat"),
+        ], className="mini-stat-grid")
+    else:
+        stats = html.Div([
+            html.Div([html.Strong(mix), html.Span("revisar mix")], className="mini-stat"),
+            html.Div([html.Strong(cambios), html.Span("racks cambiados")], className="mini-stat"),
+            html.Div([html.Strong("—"), html.Span("tendencia aún no evaluable")], className="mini-stat mini-stat-disabled"),
+        ], className="mini-stat-grid mini-stat-grid-3")
 
     summary = html.Div([
         html.Div([
@@ -638,14 +721,7 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
             html.P(top["motivo"], className="action-hero-text"),
             html.P(top["recomendacion"], className="action-hero-reco"),
         ], className="action-hero"),
-        html.Div([
-            html.Div([html.Strong(alta), html.Span("prioridad alta")], className="mini-stat"),
-            html.Div([html.Strong(proteger), html.Span("proteger desempeño")], className="mini-stat"),
-            html.Div([html.Strong(revisar), html.Span("revisar espacio")], className="mini-stat"),
-            html.Div([html.Strong(potenciar), html.Span("potenciar")], className="mini-stat"),
-            html.Div([html.Strong(mix), html.Span("revisar mix")], className="mini-stat"),
-            html.Div([html.Strong(cambios), html.Span("racks cambiados")], className="mini-stat"),
-        ], className="mini-stat-grid"),
+        stats,
         html.Div(comparacion_note, className="engine-note"),
     ], className="action-summary")
 
@@ -682,9 +758,10 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
     Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
     Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
     Input("f-maneja_stock", "value"), Input("f-nivel-mapa", "value"), Input("store-seleccion", "data"),
+    Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"),
 )
 def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zona_pck,
-                 responsable_linea, marca, maneja_sel, nivel_mapa_lbl, seleccion):
+                 responsable_linea, marca, maneja_sel, nivel_mapa_lbl, seleccion, pasillo_ubic, rack_ubic):
     if not tienda:
         return [dash.no_update] * 19
 
@@ -698,8 +775,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
     fisico = bool(ctx.get("cubierto"))
 
-    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    pasillo_f, rack_f = effective_section(seleccion, pasillo_ubic, rack_ubic)
     hay_seccion = bool(pasillo_f or rack_f)
 
     # Total tienda/producto es seguro sin ubicación. Al seleccionar una sección y existir
@@ -737,8 +813,16 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         tree = db.get_treemap(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
                               pasillo=pasillo_f, rack=rack_f)
 
-    sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
-    acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250, pasillo=pasillo_f, rack=rack_f)
+    # Stock sin venta solo aplica a SKU que manejan stock. Si el usuario filtra Maneja stock=No,
+    # mostramos N/A en vez de un 0 engañoso.
+    if maneja_sel == "No":
+        sinventa_count = None
+        sinventa_total_tienda = None
+        acciones_prod = pd.DataFrame()
+    else:
+        sinventa_count = db.get_sin_venta_count(tienda, anio, filtros=filtros, pasillo=pasillo_f, rack=rack_f)
+        sinventa_total_tienda = db.get_sin_venta_count(tienda, anio, filtros=filtros)
+        acciones_prod = db.get_acciones_producto(tienda, anio, filtros=filtros, n=250, pasillo=pasillo_f, rack=rack_f)
 
     tiendas = db.get_tiendas()
     row_store = tiendas[tiendas["cod_tienda"] == tienda]
@@ -751,7 +835,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     else:
         periodo_txt = f"Año {anio}"
 
-    selection_txt = f"Analizando rack {rack_f}" if rack_f else f"Analizando pasillo {pasillo_f}" if pasillo_f else None
+    selection_txt = f"Rack {rack_f}" if rack_f else f"Pasillo {pasillo_f}" if pasillo_f else None
     sync = db.get_sync_status()
     sync_txt = "Datos cargados desde Postgres"
     if sync and sync.get("ejecutado_en") is not None:
@@ -780,10 +864,16 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     if fisico:
         cov = ctx.get("cobertura_venta_pct")
         cov_txt = f" · cobertura de venta con ubicación: {cov:.1%}" if cov is not None else ""
+        cobertura_parcial = cov is not None and cov < 0.90
+        pill_txt = "Ubicación física parcial" if cobertura_parcial else "Rack físico verificado"
+        banner_cls = "mode-banner mode-banner-warning" if cobertura_parcial else "mode-banner mode-banner-good"
+        pill_cls = "mode-pill mode-pill-warning" if cobertura_parcial else "mode-pill mode-pill-good"
+        extra = (" Cobertura bajo 90%: interpreta las recomendaciones como señales y valida los racks críticos antes de mover espacio."
+                 if cobertura_parcial else "")
         banners.append(html.Div([
-            html.Span("Rack físico verificado", className="mode-pill mode-pill-good"),
-            html.Span(f"Ubicación reconstruida según la fecha de cada venta. Historial disponible: {ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}{cov_txt}. Las variaciones de rack usan el período inmediatamente anterior dentro de esta ventana; no 2025."),
-        ], className="mode-banner mode-banner-good"))
+            html.Span(pill_txt, className=pill_cls),
+            html.Span(f"Ubicación reconstruida según la fecha de cada venta. Historial disponible: {ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}{cov_txt}. Las variaciones de rack usan el período inmediatamente anterior dentro de esta ventana; no 2025.{extra}"),
+        ], className=banner_cls))
     else:
         rango = f"{ctx['desde']:%d/%m/%Y}–{ctx['hasta']:%d/%m/%Y}" if ctx.get("desde") else "aún no cargado"
         banners.append(html.Div([
@@ -817,9 +907,14 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         metric_card("Racks con venta", f"{racks_count:,}".replace(",", "."),
                     f"{skus_count:,} SKU con venta".replace(",", "."),
                     tooltip="Con ubicación física disponible cuenta racks donde realmente ocurrió venta en el período. Fuera de esa ventana cuenta racks atribuidos al surtido vigente."),
-        metric_card("SKU con stock sin venta YTD", f"{sinventa_count:,}".replace(",", "."),
-                    "Stock > 0 y sin venta positiva en el año", "bad" if sinventa_count else "good",
-                    tooltip="SKU del surtido vigente con stock positivo y sin venta positiva en el año. Usa ubicación actual, no histórica."),
+        metric_card(
+            "SKU con stock sin venta YTD",
+            "No aplica" if sinventa_count is None else f"{sinventa_count:,}".replace(",", "."),
+            ("Maneja stock = No: este indicador requiere stock positivo" if sinventa_count is None
+             else (f"{sinventa_count} en la selección · {sinventa_total_tienda} en la tienda" if hay_seccion
+                   else "Stock > 0 y sin venta positiva en el año")),
+            "muted" if sinventa_count is None else "bad" if sinventa_count else "good",
+            tooltip="Solo evalúa SKU que manejan stock (S), tienen stock positivo hoy y no registran venta positiva en el año. Si filtras Maneja stock = No, el indicador no aplica."),
     ]
 
     fig_map = _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, seleccion, fisico=fisico)
@@ -862,14 +957,26 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         {"name": "Cantidad", "id": "cantidad", "type": "numeric", "format": NUM_FMT},
     ]
 
-    if acciones_prod.empty:
-        opp_summary = html.Div("No hay SKU con stock y sin venta para los filtros actuales.", className="empty-note")
+    if maneja_sel == "No":
+        opp_summary = html.Div([
+            html.Strong("Stock sin venta no aplica con ‘Maneja stock = No’. "),
+            html.Span("Esta oportunidad exige stock positivo y se calcula solo sobre SKU que manejan stock."),
+        ], className="data-note")
+    elif acciones_prod.empty:
+        if hay_seccion and sinventa_total_tienda:
+            opp_summary = html.Div([
+                html.Strong("No hay SKU con stock sin venta en la sección seleccionada. "),
+                html.Span(f"Con los mismos filtros hay {sinventa_total_tienda} en toda la tienda. Quita el filtro de rack/pasillo para verlos."),
+            ], className="data-note")
+        else:
+            opp_summary = html.Div("No hay SKU con stock y sin venta para los filtros actuales.", className="empty-note")
     else:
         counts = acciones_prod["prioridad"].value_counts()
         opp_summary = html.Div([
             html.Div([html.Strong(int(counts.get("Alta", 0))), html.Span("prioridad alta")], className="mini-stat"),
             html.Div([html.Strong(int(counts.get("Media", 0))), html.Span("prioridad media")], className="mini-stat"),
-            html.Div([html.Strong(sinventa_count), html.Span("total sin venta")], className="mini-stat"),
+            html.Div([html.Strong(sinventa_count), html.Span("en selección" if hay_seccion else "total sin venta")], className="mini-stat"),
+            html.Div([html.Strong(sinventa_total_tienda), html.Span("total tienda")], className="mini-stat") if hay_seccion else None,
         ], className="mini-stat-grid opportunity-stats")
     sinventa_cols = [
         {"name": "Prioridad", "id": "prioridad"}, {"name": "SKU", "id": "cod_rapido"},
@@ -901,10 +1008,10 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     Input("f-mes", "value"), Input("f-semana", "value"),
     Input("f-familia", "value"), Input("f-categoria", "value"), Input("f-clasificacion", "value"),
     Input("f-zona_pck", "value"), Input("f-responsable_linea", "value"), Input("f-marca", "value"),
-    Input("f-maneja_stock", "value"),
+    Input("f-maneja_stock", "value"), Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"),
 )
 def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, clasificacion,
-                     zona_pck, responsable, marca, maneja):
+                     zona_pck, responsable, marca, maneja, pasillo_ubic, rack_ubic):
     if not tienda:
         return None
     anio = db.get_anio_actual(tienda)
@@ -913,6 +1020,9 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
     semana_sel = semana if modo == "Semana" else None
     ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
     fisico = bool(ctx.get("cubierto"))
+
+    if not seleccion and (rack_ubic or pasillo_ubic):
+        seleccion = {"nivel": "rack", "clave": str(rack_ubic)} if rack_ubic else {"nivel": "pasillo", "clave": str(pasillo_ubic)}
 
     if not seleccion:
         if fisico:
@@ -1076,18 +1186,18 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
     State("f-familia", "value"), State("f-categoria", "value"), State("f-clasificacion", "value"),
     State("f-zona_pck", "value"), State("f-responsable_linea", "value"), State("f-marca", "value"),
     State("f-maneja_stock", "value"), State("store-seleccion", "data"),
+    State("f-pasillo-ubic", "value"), State("f-rack-ubic", "value"),
     prevent_initial_call=True,
 )
 def _descargar_detalle(_, tienda, modo, mes, semana, familia, categoria, clasificacion,
-                       zona_pck, responsable, marca, maneja, seleccion):
+                       zona_pck, responsable, marca, maneja, seleccion, pasillo_ubic, rack_ubic):
     if not tienda:
         return dash.no_update
     anio = db.get_anio_actual(tienda)
     mes_sel = mes if modo == "Mes" else None
     semana_sel = semana if modo == "Semana" else None
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
-    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    pasillo_f, rack_f = effective_section(seleccion, pasillo_ubic, rack_ubic)
     ctx = db.get_contexto_ubicacion_fisica(tienda, anio, mes_sel, semana_sel)
     if (pasillo_f or rack_f) and ctx.get("cubierto"):
         df = db.get_detalle_productos_fisico(tienda, anio, mes=mes_sel, semana=semana_sel, filtros=filtros,
@@ -1110,17 +1220,16 @@ def _descargar_detalle(_, tienda, modo, mes, semana, familia, categoria, clasifi
     State("f-tienda", "value"), State("f-familia", "value"), State("f-categoria", "value"),
     State("f-clasificacion", "value"), State("f-zona_pck", "value"),
     State("f-responsable_linea", "value"), State("f-marca", "value"), State("f-maneja_stock", "value"),
-    State("store-seleccion", "data"),
+    State("store-seleccion", "data"), State("f-pasillo-ubic", "value"), State("f-rack-ubic", "value"),
     prevent_initial_call=True,
 )
 def _descargar_sinventa(_, tienda, familia, categoria, clasificacion, zona_pck,
-                        responsable, marca, maneja, seleccion):
-    if not tienda:
+                        responsable, marca, maneja, seleccion, pasillo_ubic, rack_ubic):
+    if not tienda or maneja == "No":
         return dash.no_update
     anio = db.get_anio_actual(tienda)
     filtros = make_filters(maneja, familia, categoria, clasificacion, zona_pck, responsable, marca)
-    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    pasillo_f, rack_f = effective_section(seleccion, pasillo_ubic, rack_ubic)
     df = db.get_acciones_producto(tienda, anio, filtros=filtros, n=None, pasillo=pasillo_f, rack=rack_f)
     if df.empty:
         return dash.no_update
@@ -1156,22 +1265,37 @@ def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, selecci
     coords["venta"] = pd.to_numeric(coords["clave"].map(venta_map), errors="coerce").fillna(0.0)
     max_v = max(float(coords["venta"].max()), 1.0)
     positivos = coords.loc[coords["venta"] > 0, "venta"]
-    tope_color = max(float(positivos.quantile(0.90)), 1.0) if len(positivos) else 1.0
+    tope_color = max(float(positivos.quantile(0.92)), 1.0) if len(positivos) else 1.0
 
     img_b64 = base64.b64encode(plano["imagen"]).decode("ascii")
     fig.add_layout_image(dict(
         source=f"data:image/png;base64,{img_b64}", xref="x", yref="y", x=0, y=0,
-        sizex=plano["img_w"], sizey=plano["img_h"], sizing="stretch", layer="below",
+        sizex=plano["img_w"], sizey=plano["img_h"], sizing="stretch", layer="below", opacity=.82,
     ))
-    sizes = 9 + 23 * (coords["venta"] / max_v).pow(0.5)
-    fig.add_trace(go.Scatter(
-        x=coords["x"], y=coords["y"], mode="markers", customdata=coords["clave"],
-        marker=dict(size=sizes, color=coords["venta"], colorscale="Blues", cmin=0, cmax=tope_color,
-                    showscale=True, colorbar=dict(title="Venta", tickprefix="$", thickness=12, len=.55),
-                    line=dict(width=1.2, color="white"), opacity=.93),
-        text=[f"{nivel_mapa.capitalize()} {c}<br>{'Venta física' if fisico else 'Venta atribuida al surtido actual'}<br><b>{fmt_money(v)}</b>" for c, v in zip(coords["clave"], coords["venta"])],
-        hoverinfo="text",
-    ))
+
+    # Cero venta = punto pequeño gris. Venta positiva = escala azul mucho más contrastada.
+    cero = coords[coords["venta"] <= 0]
+    if len(cero):
+        fig.add_trace(go.Scatter(
+            x=cero["x"], y=cero["y"], mode="markers", customdata=cero["clave"],
+            marker=dict(size=6, color="#CBD5E1", line=dict(width=.7, color="white"), opacity=.65),
+            text=[f"{nivel_mapa.capitalize()} {c}<br>Sin venta en el período" for c in cero["clave"]],
+            hoverinfo="text", showlegend=False,
+        ))
+
+    pos = coords[coords["venta"] > 0]
+    if len(pos):
+        sizes = 11 + 27 * (pos["venta"] / max_v).pow(0.5)
+        escala_fuerte = [[0.0, "#93C5FD"], [0.18, "#3B82F6"], [0.45, "#2563EB"],
+                         [0.72, "#1D4ED8"], [1.0, "#172554"]]
+        fig.add_trace(go.Scatter(
+            x=pos["x"], y=pos["y"], mode="markers", customdata=pos["clave"],
+            marker=dict(size=sizes, color=pos["venta"], colorscale=escala_fuerte, cmin=0, cmax=tope_color,
+                        showscale=True, colorbar=dict(title="Venta", tickprefix="$", thickness=14, len=.60),
+                        line=dict(width=1.5, color="white"), opacity=1),
+            text=[f"{nivel_mapa.capitalize()} {c}<br>{'Venta física' if fisico else 'Venta atribuida al surtido actual'}<br><b>{fmt_money(v)}</b>" for c, v in zip(pos["clave"], pos["venta"])],
+            hoverinfo="text", showlegend=False,
+        ))
 
     if seleccion:
         sel_key = seleccion.get("clave")
@@ -1228,18 +1352,32 @@ def _figura_treemap(tree):
         fig.add_annotation(text="Sin datos para esta selección", showarrow=False, font=dict(color="#64748B"))
         fig.update_layout(height=470, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
         return fig
+
+    tree = tree.copy()
+    # Responsable/Jefe de línea no existe en el origen actual. Si toda la columna
+    # viene vacía, evitamos mostrar un nivel artificial '(sin jefe de línea)'.
+    tiene_jefe = ("jefe_linea" in tree.columns and
+                  tree["jefe_linea"].fillna("").astype(str).str.strip().replace("(sin jefe de línea)", "").ne("").any())
     familias = tree.groupby("familia", as_index=False)["venta"].sum()
-    jefes = tree.groupby(["familia", "jefe_linea"], as_index=False)["venta"].sum()
-    ids = (list(familias["familia"]) +
-           [f"{r.familia}|{r.jefe_linea}" for r in jefes.itertuples()] +
-           [f"{r.familia}|{r.jefe_linea}|{r.categoria}" for r in tree.itertuples()])
-    labels = list(familias["familia"]) + list(jefes["jefe_linea"]) + list(tree["categoria"])
-    parents = ([""] * len(familias) + list(jefes["familia"]) +
-               [f"{r.familia}|{r.jefe_linea}" for r in tree.itertuples()])
-    values = list(familias["venta"]) + list(jefes["venta"]) + list(tree["venta"])
+    if tiene_jefe:
+        jefes = tree.groupby(["familia", "jefe_linea"], as_index=False)["venta"].sum()
+        ids = (list(familias["familia"]) +
+               [f"{r.familia}|{r.jefe_linea}" for r in jefes.itertuples()] +
+               [f"{r.familia}|{r.jefe_linea}|{r.categoria}" for r in tree.itertuples()])
+        labels = list(familias["familia"]) + list(jefes["jefe_linea"]) + list(tree["categoria"])
+        parents = ([""] * len(familias) + list(jefes["familia"]) +
+                   [f"{r.familia}|{r.jefe_linea}" for r in tree.itertuples()])
+        values = list(familias["venta"]) + list(jefes["venta"]) + list(tree["venta"])
+    else:
+        cats = tree.groupby(["familia", "categoria"], as_index=False)["venta"].sum()
+        ids = list(familias["familia"]) + [f"{r.familia}|{r.categoria}" for r in cats.itertuples()]
+        labels = list(familias["familia"]) + list(cats["categoria"])
+        parents = [""] * len(familias) + list(cats["familia"])
+        values = list(familias["venta"]) + list(cats["venta"])
+
     fig.add_trace(go.Treemap(
         ids=ids, labels=labels, parents=parents, values=values, branchvalues="total",
-        marker=dict(colors=values, colorscale="Blues", line=dict(width=1, color="white")),
+        marker=dict(colors=values, colorscale=[[0,"#DBEAFE"],[.45,"#3B82F6"],[1,"#1E3A8A"]], line=dict(width=1, color="white")),
         texttemplate="%{label}<br>$%{value:,.0f}", hovertemplate="%{label}<br><b>$%{value:,.0f}</b><extra></extra>",
     ))
     fig.update_layout(height=500, margin=dict(l=0, r=0, t=8, b=0), paper_bgcolor="rgba(0,0,0,0)")
@@ -1280,33 +1418,56 @@ def _comparativo_cards(comp):
 # =========================
 # Cross-sell
 # =========================
+def _cross_signal(conf, lift):
+    if pd.isna(conf) or pd.isna(lift):
+        return "—"
+    frecuente = float(conf) >= 0.15
+    especifica = float(lift) >= 5
+    if frecuente and especifica:
+        return "Frecuente + específica"
+    if frecuente:
+        return "Frecuente"
+    if especifica:
+        return "Afinidad específica"
+    return "Explorar"
+
 @app.callback(Output("tabla-combos", "data"), Output("tabla-combos", "columns"),
-              Input("f-tienda", "value"), Input("combo-orden", "value"), Input("store-seleccion", "data"))
-def _combos_top(tienda, orden, seleccion):
+              Input("f-tienda", "value"), Input("combo-orden", "value"), Input("store-seleccion", "data"),
+              Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"))
+def _combos_top(tienda, orden, seleccion, pasillo_ubic, rack_ubic):
     if not tienda:
         return [], []
-    pasillo_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "pasillo" else None
-    rack_f = seleccion["clave"] if seleccion and seleccion.get("nivel") == "rack" else None
+    pasillo_f, rack_f = effective_section(seleccion, pasillo_ubic, rack_ubic)
     df = db.get_top_combos(tienda, n=40, orden=orden, pasillo=pasillo_f, rack=rack_f)
     if not df.empty:
         df = df.copy()
-        df["confianza_pct"] = pd.to_numeric(df["confianza_a_b"], errors="coerce") * 100
+        conf = pd.to_numeric(df["confianza_a_b"], errors="coerce")
         lift_num = pd.to_numeric(df["lift"], errors="coerce")
+        boletas = pd.to_numeric(df["boletas"], errors="coerce")
+        df["confianza_pct"] = conf * 100
+        df["frecuencia_base_pct"] = (conf / lift_num.replace(0, pd.NA)) * 100
+        df["oportunidad_sin_b"] = ((boletas / conf.replace(0, pd.NA)) - boletas).round()
         df["afinidad_txt"] = lift_num.apply(lambda x: f"{x:.1f}×".replace(".", ",") if pd.notna(x) else "—")
+        df["senal"] = [_cross_signal(c, l) for c, l in zip(conf, lift_num)]
     cols = [
         {"name": "Producto A", "id": "desc_a"}, {"name": "Producto B", "id": "desc_b"},
         {"name": "Compras juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
         {"name": "% A → B", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "Afinidad vs esperado", "id": "afinidad_txt"},
+        {"name": "Frecuencia normal de B", "id": "frecuencia_base_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad", "id": "afinidad_txt"},
+        {"name": "A sin B", "id": "oportunidad_sin_b", "type": "numeric", "format": NUM_FMT},
+        {"name": "Lectura", "id": "senal"},
     ]
     return clean_records(df), cols
 
 
-@app.callback(Output("combo-producto", "options"), Input("f-tienda", "value"))
-def _combo_producto_opts(tienda):
+@app.callback(Output("combo-producto", "options"), Input("f-tienda", "value"),
+              Input("store-seleccion", "data"), Input("f-pasillo-ubic", "value"), Input("f-rack-ubic", "value"))
+def _combo_producto_opts(tienda, seleccion, pasillo_ubic, rack_ubic):
     if not tienda:
         return []
-    df = db.get_productos_lista(tienda)
+    pasillo_f, rack_f = effective_section(seleccion, pasillo_ubic, rack_ubic)
+    df = db.get_productos_lista(tienda, pasillo=pasillo_f, rack=rack_f)
     return [{"label": r.descripcion, "value": r.sku} for r in df.itertuples()]
 
 
@@ -1318,14 +1479,20 @@ def _combos_producto(tienda, sku):
     df = db.get_combos_de_producto(tienda, sku, n=15)
     if not df.empty:
         df = df.copy()
-        df["confianza_pct"] = pd.to_numeric(df["confianza"], errors="coerce") * 100
+        conf = pd.to_numeric(df["confianza"], errors="coerce")
         lift_num = pd.to_numeric(df["lift"], errors="coerce")
+        df["confianza_pct"] = conf * 100
+        df["frecuencia_base_pct"] = pd.to_numeric(df.get("frecuencia_base"), errors="coerce") * 100
         df["afinidad_txt"] = lift_num.apply(lambda x: f"{x:.1f}×".replace(".", ",") if pd.notna(x) else "—")
+        df["senal"] = [_cross_signal(c, l) for c, l in zip(conf, lift_num)]
     cols = [
-        {"name": "Se compra junto con", "id": "producto"},
+        {"name": "Complemento sugerido", "id": "producto"},
         {"name": "Compras juntas", "id": "boletas", "type": "numeric", "format": NUM_FMT},
-        {"name": "% de compras del producto seleccionado que también llevan este", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
-        {"name": "Afinidad vs esperado", "id": "afinidad_txt"},
+        {"name": "% que también lo llevan", "id": "confianza_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Frecuencia normal", "id": "frecuencia_base_pct", "type": "numeric", "format": PCT_FMT},
+        {"name": "Afinidad", "id": "afinidad_txt"},
+        {"name": "Compras sin complemento", "id": "oportunidades_sin_complemento", "type": "numeric", "format": NUM_FMT},
+        {"name": "Lectura", "id": "senal"},
     ]
     return clean_records(df), cols
 

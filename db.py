@@ -851,22 +851,70 @@ def get_top_combos(cod_tienda, n=30, orden="boletas", pasillo=None, rack=None):
         f"WHERE {where} ORDER BY {col} DESC LIMIT %(n)s", params)
 
 
-def get_productos_lista(cod_tienda):
+def get_productos_lista(cod_tienda, pasillo=None, rack=None):
+    """Productos con relaciones de cross-sell; al elegir ubicación usa el surtido vigente de esa sección."""
+    params = {"t": cod_tienda}
+    filtro = ""
+    if rack:
+        params["rack"] = rack
+        filtro = " AND x.sku IN (SELECT cod_rapido FROM dim_producto_tienda WHERE cod_tienda=%(t)s AND rack=%(rack)s)"
+    elif pasillo:
+        params["pasillo"] = pasillo
+        filtro = " AND x.sku IN (SELECT cod_rapido FROM dim_producto_tienda WHERE cod_tienda=%(t)s AND pasillo=%(pasillo)s)"
     return _df(
-        "SELECT DISTINCT sku, descripcion FROM ("
+        "SELECT DISTINCT x.sku, x.descripcion FROM ("
         "  SELECT sku_a AS sku, desc_a AS descripcion FROM fact_cross_sell WHERE cod_tienda=%(t)s "
         "  UNION SELECT sku_b, desc_b FROM fact_cross_sell WHERE cod_tienda=%(t)s"
-        ") x ORDER BY descripcion", {"t": cod_tienda})
+        ") x WHERE COALESCE(x.descripcion,'')<>''" + filtro + " ORDER BY x.descripcion", params)
 
 
 def get_combos_de_producto(cod_tienda, cod_rapido, n=15):
+    """Relaciones dirigidas desde el producto seleccionado, con métricas accionables.
+
+    compras_base se deriva como boletas/confianza. oportunidades_sin_complemento
+    representa compras del producto seleccionado donde el complemento NO apareció;
+    es una oportunidad de prueba de cross-sell, no una venta incremental esperada.
+    """
     return _df(
-        "SELECT CASE WHEN sku_a=%(sku)s THEN desc_b ELSE desc_a END AS producto, boletas, "
-        "CASE WHEN sku_a=%(sku)s THEN confianza_a_b ELSE confianza_b_a END AS confianza, lift "
-        "FROM fact_cross_sell WHERE cod_tienda=%(t)s AND (sku_a=%(sku)s OR sku_b=%(sku)s) "
-        "ORDER BY boletas DESC LIMIT %(n)s",
+        "WITH rel AS ("
+        " SELECT CASE WHEN sku_a=%(sku)s THEN desc_b ELSE desc_a END AS producto, boletas, "
+        " CASE WHEN sku_a=%(sku)s THEN confianza_a_b ELSE confianza_b_a END AS confianza, lift "
+        " FROM fact_cross_sell WHERE cod_tienda=%(t)s AND (sku_a=%(sku)s OR sku_b=%(sku)s)"
+        ") "
+        "SELECT producto, boletas, confianza, lift, "
+        " CASE WHEN lift>0 THEN confianza/lift ELSE NULL END AS frecuencia_base, "
+        " CASE WHEN confianza>0 THEN ROUND(boletas/confianza) ELSE NULL END AS compras_producto, "
+        " CASE WHEN confianza>0 THEN GREATEST(ROUND(boletas/confianza)-boletas,0) ELSE NULL END AS oportunidades_sin_complemento "
+        "FROM rel ORDER BY boletas DESC LIMIT %(n)s",
         {"t": cod_tienda, "sku": cod_rapido, "n": n})
 
+
+
+def get_pasillos_disponibles(cod_tienda):
+    """Pasillos conocidos: surtido vigente + historia física ya preservada en Postgres."""
+    return _df(
+        "SELECT pasillo FROM ("
+        " SELECT DISTINCT pasillo FROM dim_producto_tienda WHERE cod_tienda=%(t)s AND COALESCE(pasillo,'')<>'' "
+        " UNION "
+        " SELECT DISTINCT pasillo FROM fact_venta_rack_dia WHERE cod_tienda=%(t)s AND COALESCE(pasillo,'')<>'' "
+        ") x ORDER BY pasillo", {"t": cod_tienda})
+
+
+def get_racks_disponibles(cod_tienda, pasillo=None):
+    """Racks conocidos, opcionalmente acotados a un pasillo."""
+    params = {"t": cod_tienda}
+    cond_dim = ""
+    cond_fact = ""
+    if pasillo:
+        params["p"] = str(pasillo)
+        cond_dim = " AND pasillo=%(p)s"
+        cond_fact = " AND pasillo=%(p)s"
+    return _df(
+        "SELECT rack FROM ("
+        " SELECT DISTINCT rack FROM dim_producto_tienda WHERE cod_tienda=%(t)s AND COALESCE(rack,'')<>''" + cond_dim +
+        " UNION "
+        " SELECT DISTINCT rack FROM fact_venta_rack_dia WHERE cod_tienda=%(t)s AND COALESCE(rack,'')<>''" + cond_fact +
+        ") x ORDER BY rack", params)
 
 def get_plano(cod_tienda):
     with get_conn() as cn, cn.cursor() as cur:
