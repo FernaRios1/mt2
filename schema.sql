@@ -157,3 +157,28 @@ CREATE TABLE IF NOT EXISTS sync_ubicacion_fisica (
     cobertura_venta_pct NUMERIC(7,4),
     actualizado         TIMESTAMP DEFAULT now()
 );
+
+-- V8: venta neta sin IVA + NCV separada.
+ALTER TABLE fact_venta_semana ADD COLUMN IF NOT EXISTS venta_bruta NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_semana ADD COLUMN IF NOT EXISTS ncv NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_semana ADD COLUMN IF NOT EXISTS cantidad_bruta NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_semana ADD COLUMN IF NOT EXISTS cantidad_ncv NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE fact_venta_rack_dia ADD COLUMN IF NOT EXISTS venta_bruta NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_rack_dia ADD COLUMN IF NOT EXISTS ncv NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_rack_dia ADD COLUMN IF NOT EXISTS cantidad_bruta NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE fact_venta_rack_dia ADD COLUMN IF NOT EXISTS cantidad_ncv NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+-- V8: historial permanente de cambios de ubicación. Guarda cambios, no snapshots diarios.
+CREATE TABLE IF NOT EXISTS hist_ubicacion_sku (
+    cod_tienda   VARCHAR(10) NOT NULL REFERENCES dim_tienda(cod_tienda),
+    cod_rapido   VARCHAR(30) NOT NULL,
+    fecha_desde  DATE NOT NULL,
+    pasillo      VARCHAR(20) NOT NULL DEFAULT '',
+    rack         VARCHAR(20) NOT NULL DEFAULT '',
+    fuente       VARCHAR(20) NOT NULL DEFAULT 'INFSTOCK',
+    actualizado  TIMESTAMP DEFAULT now(),
+    PRIMARY KEY (cod_tienda, cod_rapido, fecha_desde)
+);
+CREATE INDEX IF NOT EXISTS idx_hus_tienda_fecha ON hist_ubicacion_sku (cod_tienda, fecha_desde);
+CREATE INDEX IF NOT EXISTS idx_hus_sku_fecha ON hist_ubicacion_sku (cod_tienda, cod_rapido, fecha_desde);

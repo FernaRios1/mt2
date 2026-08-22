@@ -30,6 +30,13 @@ def fmt_money_short(n):
     return fmt_money(n)
 
 
+def fmt_money_signed(n):
+    if n is None or pd.isna(n):
+        return "—"
+    n = float(n)
+    return ("-" if n < 0 else "") + fmt_money_short(abs(n))
+
+
 def fmt_pct(n, signed=True):
     if n is None or pd.isna(n):
         return "—"
@@ -725,13 +732,14 @@ def _acciones_rack(tienda, modo, mes, semana, familia, categoria, clasificacion,
         html.Div(comparacion_note, className="engine-note"),
     ], className="action-summary")
 
-    view = accionables[["prioridad", "accion", "pasillo", "rack", "venta", "variacion_pct",
+    view = accionables[["prioridad", "accion", "pasillo", "rack", "venta", "ncv_pct", "variacion_pct",
                         "skus", "skus_asociados_hoy", "venta_por_sku", "motivo"]].head(250).copy()
     view["id"] = view["rack"].astype(str)
     cols = [
         {"name": "Prioridad", "id": "prioridad"}, {"name": "Acción", "id": "accion"},
         {"name": "Pasillo", "id": "pasillo"}, {"name": "Rack", "id": "rack"},
-        {"name": "Venta física", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Venta neta física s/IVA", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "% NCV", "id": "ncv_pct", "type": "numeric", "format": PCT_FMT},
         {"name": "Variación vs período anterior", "id": "variacion_pct", "type": "numeric", "format": PCT_FMT},
         {"name": "SKU vendidos aquí", "id": "skus", "type": "numeric", "format": NUM_FMT},
         {"name": "SKU asociados hoy", "id": "skus_asociados_hoy", "type": "numeric", "format": NUM_FMT},
@@ -883,7 +891,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
     if float(resumen.get("margen") or 0) == 0:
         banners.append(html.Div([
             html.Span("Margen pendiente", className="mode-pill"),
-            html.Span("No se calcula rentabilidad. Los indicadores actuales son de venta, unidades, surtido, stock y afinidad de compra."),
+            html.Span("No se calcula rentabilidad. La venta se muestra neta sin IVA: FCV/BLV sin IVA más NCV negativa. Margen sigue pendiente."),
         ], className="mode-banner mode-banner-neutral"))
     margen_status = html.Div(banners, className="mode-banner-stack")
 
@@ -899,10 +907,17 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
                    if resumen.get("periodo_anterior") else "Sin período comparable válido")
     racks_count = int(racks["rack"].nunique()) if len(racks) else 0
     skus_count = int(resumen.get("skus") or 0)
+    bruto_periodo = float(resumen.get("venta_bruta") or 0)
+    ncv_periodo = float(resumen.get("ncv") or 0)
+    ncv_pct = float(resumen.get("ncv_pct") or 0)
     kpis = [
-        metric_card("Venta del período", fmt_money_short(resumen.get("venta")),
-                    "Respeta tienda, período, filtros y selección",
-                    tooltip="Suma de venta del universo visible. Si hay una sección seleccionada y el período está cubierto, usa su ubicación física real de la fecha."),
+        metric_card("Venta neta sin IVA", fmt_money_short(resumen.get("venta")),
+                    f"Bruta s/IVA {fmt_money_short(bruto_periodo)} · NCV {fmt_money_signed(ncv_periodo)}",
+                    tooltip="Venta neta = FCV y BLV divididas por 1,19 + NCV con signo negativo. Respeta tienda, período, filtros y selección."),
+        metric_card("NCV del período", fmt_money_signed(ncv_periodo),
+                    f"{ncv_pct:.1f}% de la venta bruta s/IVA",
+                    "bad" if ncv_pct >= 5 else "muted",
+                    tooltip="Monto de notas de crédito sin IVA, mostrado con signo negativo. El porcentaje es |NCV| / venta bruta sin IVA. No se mezcla en cross-sell."),
         metric_card(var_label, fmt_pct(var), prev_helper, var_tone, tooltip=var_tip),
         metric_card("Racks con venta", f"{racks_count:,}".replace(",", "."),
                     f"{skus_count:,} SKU con venta".replace(",", "."),
@@ -935,7 +950,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         pasillos = pasillos.copy(); pasillos["venta_por_rack"] = pasillos["venta"] / pasillos["racks"].replace(0, pd.NA)
     if len(racks):
         racks = racks.copy(); racks["venta_por_sku"] = racks["venta"] / racks["skus"].replace(0, pd.NA)
-    venta_col = "Venta física" if fisico else "Venta atribuida"
+    venta_col = "Venta neta física s/IVA" if fisico else "Venta neta atribuida s/IVA"
     cols_pasillo = [
         {"name": "Pasillo", "id": "pasillo"}, {"name": "Racks", "id": "racks", "type": "numeric", "format": NUM_FMT},
         {"name": "SKU con venta", "id": "skus", "type": "numeric", "format": NUM_FMT},
@@ -953,7 +968,7 @@ def _actualizar(tienda, modo, mes, semana, familia, categoria, clasificacion, zo
         {"name": "SKU", "id": "cod_rapido"}, {"name": "Producto", "id": "descripcion"},
         {"name": "Categoría", "id": "categoria"}, {"name": "Familia", "id": "familia"},
         {"name": "Marca", "id": "marca"}, {"name": "Stock hoy", "id": "stock", "type": "numeric", "format": NUM_FMT},
-        {"name": "Venta", "id": "venta", "type": "numeric", "format": MONEY_FMT},
+        {"name": "Venta neta s/IVA", "id": "venta", "type": "numeric", "format": MONEY_FMT},
         {"name": "Cantidad", "id": "cantidad", "type": "numeric", "format": NUM_FMT},
     ]
 
@@ -1067,7 +1082,8 @@ def _selection_panel(seleccion, tienda, modo, mes, semana, familia, categoria, c
         sold_label = "SKU con venta del surtido"
 
     metrics = html.Div([
-        html.Div([label_with_tip("Venta del período", "Con modo físico es la venta ocurrida realmente en esta sección. Con modo surtido actual es la venta de los SKU que hoy pertenecen a la sección."), html.Strong(fmt_money_short(resumen.get("venta")))]),
+        html.Div([label_with_tip("Venta neta sin IVA", "FCV/BLV sin IVA más NCV negativa. En modo físico se atribuye al rack histórico correspondiente; en modo surtido actual se atribuye al surtido vigente."), html.Strong(fmt_money_short(resumen.get("venta")))]),
+        html.Div([label_with_tip("NCV", "Notas de crédito sin IVA del período. Para ubicación física se usa el SKU y la ubicación del documento original, conservando la fecha de la NCV para el período contable."), html.Strong(fmt_money_signed(resumen.get("ncv")))]),
         html.Div([label_with_tip(var_label, "En modo físico compara contra el período inmediatamente anterior dentro de la ventana disponible. En modo surtido actual no representa necesariamente el mismo espacio físico histórico."), html.Strong(fmt_pct(resumen.get("variacion_pct")))]),
         html.Div([label_with_tip(sold_label, "Cantidad de códigos de producto distintos con venta en el universo mostrado."), html.Strong(f"{int(resumen.get('skus') or 0):,}".replace(",", "."))]),
         html.Div([label_with_tip("SKU asociados hoy", "Productos que el snapshot vigente ubica hoy en este rack/pasillo, hayan vendido o no."), html.Strong(f"{int(surtido.get('skus_asociados') or 0):,}".replace(",", "."))]),
@@ -1291,9 +1307,9 @@ def _figura_mapa(tienda, anio, mes_sel, semana_sel, filtros, nivel_mapa, selecci
         fig.add_trace(go.Scatter(
             x=pos["x"], y=pos["y"], mode="markers", customdata=pos["clave"],
             marker=dict(size=sizes, color=pos["venta"], colorscale=escala_fuerte, cmin=0, cmax=tope_color,
-                        showscale=True, colorbar=dict(title="Venta", tickprefix="$", thickness=14, len=.60),
+                        showscale=True, colorbar=dict(title="Venta neta s/IVA", tickprefix="$", thickness=14, len=.60),
                         line=dict(width=1.5, color="white"), opacity=1),
-            text=[f"{nivel_mapa.capitalize()} {c}<br>{'Venta física' if fisico else 'Venta atribuida al surtido actual'}<br><b>{fmt_money(v)}</b>" for c, v in zip(pos["clave"], pos["venta"])],
+            text=[f"{nivel_mapa.capitalize()} {c}<br>{'Venta neta física s/IVA' if fisico else 'Venta neta atribuida al surtido actual'}<br><b>{fmt_money(v)}</b>" for c, v in zip(pos["clave"], pos["venta"])],
             hoverinfo="text", showlegend=False,
         ))
 
@@ -1399,7 +1415,7 @@ def _comparativo_cards(comp):
         return (float(actual) - float(anterior)) / float(anterior) * 100
 
     filas = [
-        ("Venta", fmt_money_short(a_actual.venta), _var(a_actual.venta, a_ant.venta), fmt_money_short(a_ant.venta)),
+        ("Venta neta s/IVA", fmt_money_short(a_actual.venta), _var(a_actual.venta, a_ant.venta), fmt_money_short(a_ant.venta)),
         ("Transacciones", f"{int(a_actual.trx):,}".replace(",", "."), _var(a_actual.trx, a_ant.trx),
          f"{int(a_ant.trx):,}".replace(",", ".")),
         ("Ticket promedio", fmt_money(a_actual.ticket_promedio), _var(a_actual.ticket_promedio, a_ant.ticket_promedio),

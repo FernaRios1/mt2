@@ -42,6 +42,27 @@ def ensure_ready():
     cur = conn.cursor()
     with open(os.path.join(_HERE, "schema.sql"), encoding="utf-8") as f:
         cur.execute(f.read())
+
+    # V8: venta neta sin IVA + NCV separada e historial permanente de ubicación.
+    for tabla in ("fact_venta_semana", "fact_venta_rack_dia"):
+        cur.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS venta_bruta NUMERIC(14,2) NOT NULL DEFAULT 0")
+        cur.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS ncv NUMERIC(14,2) NOT NULL DEFAULT 0")
+        cur.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS cantidad_bruta NUMERIC(14,2) NOT NULL DEFAULT 0")
+        cur.execute(f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS cantidad_ncv NUMERIC(14,2) NOT NULL DEFAULT 0")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS hist_ubicacion_sku (
+            cod_tienda VARCHAR(10) NOT NULL REFERENCES dim_tienda(cod_tienda),
+            cod_rapido VARCHAR(30) NOT NULL,
+            fecha_desde DATE NOT NULL,
+            pasillo VARCHAR(20) NOT NULL DEFAULT '',
+            rack VARCHAR(20) NOT NULL DEFAULT '',
+            fuente VARCHAR(20) NOT NULL DEFAULT 'INFSTOCK',
+            actualizado TIMESTAMP DEFAULT now(),
+            PRIMARY KEY (cod_tienda, cod_rapido, fecha_desde)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_hus_tienda_fecha ON hist_ubicacion_sku (cod_tienda, fecha_desde)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_hus_sku_fecha ON hist_ubicacion_sku (cod_tienda, cod_rapido, fecha_desde)")
     conn.commit()
 
     def _vacia(tabla):
@@ -227,11 +248,15 @@ def get_resumen_periodo(cod_tienda, anio, mes=None, semana=None, filtros=None, p
     """
     where, params = _where(cod_tienda, anio, mes, semana, filtros)
     where, params = _agregar_seccion(where, params, pasillo, rack)
-    q = (f"SELECT COALESCE(SUM(f.venta),0) AS venta, COALESCE(SUM(f.margen),0) AS margen, "
-         f"COALESCE(SUM(f.cantidad),0) AS unidades, COUNT(DISTINCT f.pasillo) AS pasillos, "
-         f"COUNT(DISTINCT f.rack) AS racks, COUNT(DISTINCT f.cod_rapido) AS skus "
+    q = (f"SELECT COALESCE(SUM(f.venta),0) AS venta, COALESCE(SUM(f.venta_bruta),0) AS venta_bruta, "
+         f"COALESCE(SUM(f.ncv),0) AS ncv, COALESCE(SUM(f.margen),0) AS margen, "
+         f"COALESCE(SUM(f.cantidad),0) AS unidades, COALESCE(SUM(f.cantidad_bruta),0) AS unidades_brutas, "
+         f"COALESCE(SUM(f.cantidad_ncv),0) AS unidades_ncv, COUNT(DISTINCT f.pasillo) AS pasillos, "
+         f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.rack END) AS racks, COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus "
          f"{_JOIN} WHERE {where}")
     cur = _df(q, params).iloc[0].to_dict()
+    bruto = float(cur.get("venta_bruta") or 0)
+    cur["ncv_pct"] = abs(float(cur.get("ncv") or 0)) / bruto * 100 if bruto else 0.0
 
     prev_label = None
     prev_venta = None
@@ -319,7 +344,7 @@ def get_sin_venta_count(cod_tienda, anio, filtros=None, pasillo=None, rack=None)
       AND NOT EXISTS (
           SELECT 1 FROM fact_venta_semana f
           WHERE f.cod_tienda=d.cod_tienda AND f.cod_rapido=d.cod_rapido
-            AND f.anio=%(a)s AND f.venta > 0
+            AND f.anio=%(a)s AND f.venta_bruta > 0
       )
     """
     df = _df(q, params)
@@ -344,7 +369,7 @@ def get_acciones_rack(cod_tienda, anio, mes=None, semana=None, filtros=None):
     """
     where, params = _where(cod_tienda, anio, mes, semana, filtros)
     q = (f"SELECT f.pasillo, f.rack, SUM(f.venta) AS venta, SUM(f.cantidad) AS unidades, "
-         f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN} WHERE {where} "
+         f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus {_JOIN} WHERE {where} "
          f"GROUP BY f.pasillo, f.rack")
     df = _df(q, params)
     if df.empty:
@@ -485,7 +510,8 @@ def get_pasillo_resumen(cod_tienda, anio, mes=None, semana=None, filtros=None, p
         where += " AND f.rack = %(rack)s"
         params["rack"] = rack
     q = (f"SELECT f.pasillo, SUM(f.venta) AS venta, SUM(f.margen) AS margen, SUM(f.cantidad) AS unidades, "
-         f"COUNT(DISTINCT f.rack) AS racks, COUNT(DISTINCT f.cod_rapido) AS skus "
+         f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.rack END) AS racks, "
+         f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus "
          f"{_JOIN} WHERE {where} GROUP BY f.pasillo ORDER BY venta DESC")
     return _df(q, params)
 
@@ -499,7 +525,7 @@ def get_rack_detalle(cod_tienda, anio, mes=None, semana=None, filtros=None, pasi
         where += " AND f.rack = %(rack)s"
         params["rack"] = rack
     q = (f"SELECT f.pasillo, f.rack, SUM(f.venta) AS venta, SUM(f.margen) AS margen, SUM(f.cantidad) AS unidades, "
-         f"COUNT(DISTINCT f.cod_rapido) AS skus "
+         f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus "
          f"{_JOIN} WHERE {where} GROUP BY f.pasillo, f.rack ORDER BY venta DESC")
     return _df(q, params)
 
@@ -542,7 +568,7 @@ def get_sin_venta(cod_tienda, anio, mes=None, semana=None, filtros=None, n=300):
             filtro_extra += f" AND d2.{col.split('.')[1]} = ANY(%({key})s)"
     q = (f"SELECT d2.cod_rapido, d2.descripcion, d2.marca, d2.stock FROM dim_producto_tienda d2 "
          f"WHERE d2.cod_tienda = %(t)s AND d2.maneja_stock = 'S' {filtro_extra} "
-         f"AND NOT EXISTS (SELECT 1 {_JOIN} WHERE {where_f} AND f.cod_rapido = d2.cod_rapido AND f.venta > 0) "
+         f"AND NOT EXISTS (SELECT 1 {_JOIN} WHERE {where_f} AND f.cod_rapido = d2.cod_rapido AND f.venta_bruta > 0) "
          f"ORDER BY d2.stock DESC NULLS LAST LIMIT %(n)s")
     return _df(q, params)
 
@@ -780,7 +806,7 @@ def get_acciones_producto(cod_tienda, anio, filtros=None, n=300, pasillo=None, r
           AND NOT EXISTS (
               SELECT 1 FROM fact_venta_semana f
               WHERE f.cod_tienda = d.cod_tienda AND f.cod_rapido = d.cod_rapido
-                AND f.anio = %(a)s AND f.venta > 0
+                AND f.anio = %(a)s AND f.venta_bruta > 0
           )
     ),
     historial AS (
@@ -1085,10 +1111,14 @@ def get_resumen_fisico(cod_tienda, anio, mes=None, semana=None, filtros=None, pa
         return None
     where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
     cur = _df(
-        f"SELECT COALESCE(SUM(f.venta),0) AS venta, COALESCE(SUM(f.cantidad),0) AS unidades, "
-        f"COUNT(DISTINCT f.pasillo) AS pasillos, COUNT(DISTINCT f.rack) AS racks, "
-        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where}", params
+        f"SELECT COALESCE(SUM(f.venta),0) AS venta, COALESCE(SUM(f.venta_bruta),0) AS venta_bruta, "
+        f"COALESCE(SUM(f.ncv),0) AS ncv, COALESCE(SUM(f.cantidad),0) AS unidades, "
+        f"COALESCE(SUM(f.cantidad_bruta),0) AS unidades_brutas, COALESCE(SUM(f.cantidad_ncv),0) AS unidades_ncv, "
+        f"COUNT(DISTINCT f.pasillo) AS pasillos, COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.rack END) AS racks, "
+        f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus {_JOIN_FISICO} WHERE {where}", params
     ).iloc[0].to_dict()
+    bruto = float(cur.get("venta_bruta") or 0)
+    cur["ncv_pct"] = abs(float(cur.get("ncv") or 0)) / bruto * 100 if bruto else 0.0
     prev = _rango_anterior_fisico(ctx, mes, semana)
     prev_venta = None
     prev_label = None
@@ -1114,7 +1144,8 @@ def get_pasillo_resumen_fisico(cod_tienda, anio, mes=None, semana=None, filtros=
     where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
     return _df(
         f"SELECT f.pasillo, SUM(f.venta) AS venta, SUM(f.cantidad) AS unidades, "
-        f"COUNT(DISTINCT f.rack) AS racks, COUNT(DISTINCT f.cod_rapido) AS skus "
+        f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.rack END) AS racks, "
+        f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus "
         f"{_JOIN_FISICO} WHERE {where} GROUP BY f.pasillo ORDER BY venta DESC", params)
 
 
@@ -1125,7 +1156,7 @@ def get_rack_detalle_fisico(cod_tienda, anio, mes=None, semana=None, filtros=Non
     where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros, pasillo, rack)
     return _df(
         f"SELECT f.pasillo, f.rack, SUM(f.venta) AS venta, SUM(f.cantidad) AS unidades, "
-        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where} "
+        f"COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus {_JOIN_FISICO} WHERE {where} "
         f"GROUP BY f.pasillo, f.rack ORDER BY venta DESC", params)
 
 
@@ -1194,13 +1225,15 @@ def get_acciones_rack_fisico(cod_tienda, anio, mes=None, semana=None, filtros=No
         return pd.DataFrame()
     where, params = _where_fisico(cod_tienda, ctx["periodo_desde"], ctx["periodo_hasta"], filtros)
     df = _df(
-        f"SELECT f.pasillo,f.rack,SUM(f.venta) AS venta,SUM(f.cantidad) AS unidades,"
-        f"COUNT(DISTINCT f.cod_rapido) AS skus {_JOIN_FISICO} WHERE {where} GROUP BY f.pasillo,f.rack", params)
+        f"SELECT f.pasillo,f.rack,SUM(f.venta) AS venta,SUM(f.venta_bruta) AS venta_bruta,SUM(f.ncv) AS ncv,"
+        f"SUM(f.cantidad) AS unidades,COUNT(DISTINCT CASE WHEN f.venta_bruta > 0 THEN f.cod_rapido END) AS skus {_JOIN_FISICO} "
+        f"WHERE {where} GROUP BY f.pasillo,f.rack", params)
     if df.empty:
         return df
-    for c in ("venta", "unidades", "skus"):
+    for c in ("venta", "venta_bruta", "ncv", "unidades", "skus"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["skus"] = df["skus"].astype(int)
+    df["ncv_pct"] = (df["ncv"].abs() / df["venta_bruta"].replace(0, pd.NA) * 100).fillna(0)
     df["venta_por_sku"] = df["venta"] / df["skus"].replace(0, pd.NA)
     df["percentil_venta"] = df["venta"].rank(pct=True, method="average") * 100
 
